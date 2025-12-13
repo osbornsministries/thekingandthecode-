@@ -11,14 +11,14 @@ const nextConfig = {
     buildActivity: false,
   },
 
-  // Disable ESLint during build (⚠ deprecated)
+  // Disable ESLint during build
   eslint: {
     ignoreDuringBuilds: true,
   },
 
   images: {
     unoptimized: true,
-    domains: ['yourdomain.com', 'www.yourdomain.com'], // add your image domains if any
+    domains: ['thekingandthecode.com', 'www.yourdomain.com'], // only domain names, no https://
   },
 
   trailingSlash: true,
@@ -41,9 +41,13 @@ const nextConfig = {
   // Trust host headers for proxies (helps with NextAuth domain)
   experimental: {
     trustHostHeader: true,
+    trustedHostPatterns: [
+      /^thekingandthecode\.com$/,
+      /^www\.thekingandthecode\.com$/,
+    ],
   },
 
-  // Optional: Headers for cookies or security
+  // Optional: CORS / headers for cookies or security
   async headers() {
     return [
       {
