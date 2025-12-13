@@ -28,16 +28,19 @@ export default function StepSessionSelection({
     : sessions;
 
   // Format time to be more readable
-  const formatTime = (timeString: string) => {
-    const [hours, minutes] = timeString.split(':');
-    const date = new Date();
-    date.setHours(parseInt(hours), parseInt(minutes));
-    return date.toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true
-    });
-  };
+const formatTime = (timeString: string) => {
+  const [hours, minutes] = timeString.split(':');
+
+  const date = new Date();
+  date.setHours(parseInt(hours, 10), parseInt(minutes, 10));
+
+  return date.toLocaleTimeString('en-GB', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  });
+};
+
 
   // Calculate duration
   const calculateDuration = (startTime: string, endTime: string) => {

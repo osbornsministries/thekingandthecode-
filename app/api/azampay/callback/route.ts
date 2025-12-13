@@ -134,7 +134,7 @@ async function handleSuccess(transaction: any, cb: ReturnType<typeof normalizeCa
 
   if (ticket) {
     const msg = `Hello ${ticket.purchaserName}, your payment is received. Ticket Ref: ${cb.transId}`;
-    // await SMSService.sendSMS(ticket.purchaserPhone, msg);
+     await SMSService.sendSMS(ticket.purchaserPhone, msg);
   }
 }
 

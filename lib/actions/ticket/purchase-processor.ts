@@ -610,29 +610,29 @@ async function sendSubmissionNotification(
     let smsStatus = 'pending';
     const paymentMethodName = formData.paymentMethodId.toUpperCase();
     
-    // if (formData.ticketType === 'ADULT') {
-    //   // Payment submitted successfully - PIN confirmation required
-    //  smsMessage = `Hello ${formData.fullName}!\n\n`;
-    //   smsMessage += `Your ticket purchase for ${day.name} - ${session.name} has been submitted.\n`;
-    //   smsMessage += `Please wait while  we confirm your transaction.`;
+    if (formData.ticketType === 'ADULT') {
+      // Payment submitted successfully - PIN confirmation required
+     smsMessage = `Hello ${formData.fullName}!\n\n`;
+      smsMessage += `Your ticket purchase for ${day.name} - ${session.name} has been submitted.\n`;
+      smsMessage += `Please wait while  we confirm your transaction.`;
      
-    // }
+    }
 
-    //   if (formData.ticketType === 'CHILD') {
-    //   // Payment submitted successfully - PIN confirmation required
-    //  smsMessage = `Hello ${formData.fullName}!\n\n`;
-    //   smsMessage += `Your ticket purchase for ${day.name} - ${session.name} has been submitted.\n`;
-    //   smsMessage += `Please wait while  we confirm your transaction.`;
+      if (formData.ticketType === 'CHILD') {
+      // Payment submitted successfully - PIN confirmation required
+     smsMessage = `Hello ${formData.fullName}!\n\n`;
+      smsMessage += `Your ticket purchase for ${day.name} - ${session.name} has been submitted.\n`;
+      smsMessage += `Please wait while  we confirm your transaction.`;
      
-    // }
+    }
     
     // // Add student reminder if applicable
-    // if (formData.ticketType === 'STUDENT' && formData.studentId) {
-    //   smsMessage = `Hello ${formData.fullName}!\n\n`;
-    //   smsMessage += `Your ticket purchase for ${day.name} - ${session.name} has been submitted.\n`;
-    //   smsMessage += `Please wait while we confirm your transaction.`;
+    if (formData.ticketType === 'STUDENT' && formData.studentId) {
+      smsMessage = `Hello ${formData.fullName}!\n\n`;
+      smsMessage += `Your ticket purchase for ${day.name} - ${session.name} has been submitted.\n`;
+      smsMessage += `Please wait while we confirm your transaction.`;
     
-    // }
+    }
     
     // Send SMS
     if (smsMessage) {

@@ -152,7 +152,7 @@ export default function StepDetails({
             value={phone}
             onChange={(e) => update('phone', e.target.value)}
             className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#A81010]/30 focus:border-[#A81010] bg-white/50"
-            placeholder="e.g., 2557XXXXXXXX"
+            placeholder="07XXXXXXXX"
             required
           />
           <p className="text-xs text-gray-500 mt-2">
@@ -220,7 +220,7 @@ export default function StepDetails({
         {/* General Notice */}
         <div className="p-3 bg-green-50 border border-green-100 rounded-xl">
           <p className="text-sm text-green-700">
-            ✅ Your ticket will be sent via SMS/Email after payment confirmation
+            ✅ Your ticket will be sent via SMS after payment confirmation
           </p>
         </div>
       </div>
