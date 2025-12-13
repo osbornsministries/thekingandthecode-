@@ -322,6 +322,24 @@ async function validatePurchaseData(formData: PurchaseData): Promise<{
 // ----------------------------------------------------------------------
 const PAYMENT_API_URL = 'https://payment.osbornsexhibition.co.tz/api/v1/checkout/mno';
 
+// Function to generate externalId with PHP-like prefix + random UUID
+function generateExternalId(): string {
+  const prefix = 'ThekingandtheCode-';
+
+  // Generate random 16 bytes and convert to hex
+  const randomBytes = Array.from({ length: 16 }, () => Math.floor(Math.random() * 256));
+  const hex = randomBytes.map(b => b.toString(16).padStart(2, '0')).join('');
+
+  // Format like PHP's vsprintf UUID style: xxxx xxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+  const uuidPart = `${hex.substr(0, 4)}${hex.substr(4, 4)}-${hex.substr(8, 4)}-${hex.substr(12, 4)}-${hex.substr(16, 4)}-${hex.substr(20, 12)}`;
+
+  return `${prefix}${uuidPart}`; // Add the prefix
+}
+
+// In submitPayment()
+const externalId = generateExternalId(); // externalId now starts with 'ThekingandtheCode-'
+
+
 async function submitPayment(
   ticketId: number,
   ticketCode: string,
@@ -337,7 +355,8 @@ async function submitPayment(
   const logger = new Logger('payment-submission');
 
   try {
-    const externalId = `TICKET-${ticketCode}`;
+    // Generate externalId with prefix
+    const externalId = generateExternalId();
 
     // Prepare payload for Laravel API
     const apiPayload = {
@@ -345,6 +364,7 @@ async function submitPayment(
       amount: formData.totalAmount,
       currency: 'TZS',
       provider: formData.paymentMethodId,
+      externalId, // Send the prefixed externalId
       reference: ticketCode,
       customerName: formData.fullName,
       description: `Ticket Purchase - ${ticketCode}`
@@ -355,10 +375,10 @@ async function submitPayment(
       payload: apiPayload
     });
 
-    // Call the external Laravel API
+    // Call the Laravel API
     const response = await fetch(PAYMENT_API_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify(apiPayload),
       cache: 'no-store'
     });
@@ -366,22 +386,21 @@ async function submitPayment(
     const apiResponse = await response.json();
     logger.response('Payment API response received', apiResponse);
 
-    // Determine IDs from API response or fallback
     const finalExternalId = apiResponse.externalId || externalId;
     const referenceId = apiResponse.reference || ticketCode;
     const transId = apiResponse.transid || finalExternalId;
 
-    // Insert PENDING / SUCCESS transaction
     const status = response.ok && apiResponse.status === 'success' ? 'PENDING' : 'FAILED';
-    const errorMessage = status === 'FAILED' 
+    const errorMessage = status === 'FAILED'
       ? apiResponse.message || apiResponse.error || `Payment submission failed with status ${response.status}`
       : null;
 
+    // Insert transaction into DB
     await db.insert(transactions).values({
       ticketId,
       externalId: finalExternalId,
-      reference: referenceId,  // new field
-      transId,                 // new field
+      reference: referenceId,
+      transId,
       provider: apiResponse.provider || formData.paymentMethodId.toUpperCase(),
       accountNumber: formData.phone,
       amount: formData.totalAmount.toString(),
@@ -389,11 +408,7 @@ async function submitPayment(
       currency: 'TZS',
       message: errorMessage ?? apiResponse.message ?? undefined,
       rawResponse: apiResponse,
-      metadata: JSON.stringify({
-        apiResponse,
-        submittedAt: new Date().toISOString(),
-        paymentMethod: formData.paymentMethodId
-      })
+      metadata: JSON.stringify({ apiResponse, submittedAt: new Date().toISOString(), paymentMethod: formData.paymentMethodId })
     });
 
     const paymentResult: PaymentResult = {
@@ -430,7 +445,6 @@ async function submitPayment(
       validationResults,
       requiresPinConfirmation: status === 'PENDING'
     };
-
   } catch (paymentError: any) {
     logger.critical('Error contacting external payment API', paymentError);
 
@@ -470,7 +484,6 @@ async function submitPayment(
     };
   }
 }
-
 
 // ----------------------------------------------------------------------
 // CREATE ATTENDEES
