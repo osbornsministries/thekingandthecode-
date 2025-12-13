@@ -9,6 +9,11 @@ import {
   eventSessions, eventDays, ticketPrices, paymentMethods
 } from '@/lib/drizzle/schema';
 import { eq, and } from 'drizzle-orm';
+import {
+  updateSessionCountsAfterPurchase
+} from '../../utils/session-limits';
+// } from '/../utils/session-limits-utils';
+
 
 // ----------------------------------------------------------------------
 // TYPES
@@ -61,24 +66,7 @@ export interface PaymentSubmissionResult {
   summary?: any;
 }
 
-// ----------------------------------------------------------------------
-// PAYMENT API CONSTANTS
-// ----------------------------------------------------------------------
-const PAYMENT_API_URL = 'https://payment.osbornsexhibition.co.tz/api/v1/checkout/mno';
 
-// ----------------------------------------------------------------------
-// HELPER FUNCTIONS
-// ----------------------------------------------------------------------
-function generateExternalId(): string {
-  const prefix = 'ThekingandtheCode-';
-  const randomBytes = Array.from({ length: 16 }, () => Math.floor(Math.random() * 256));
-  const hex = randomBytes.map(b => b.toString(16).padStart(2, '0')).join('');
-  
-  // Format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-  const uuidPart = `${hex.substr(0, 8)}-${hex.substr(8, 4)}-${hex.substr(12, 4)}-${hex.substr(16, 4)}-${hex.substr(20, 12)}`;
-  
-  return `${prefix}${uuidPart}`;
-}
 
 // ----------------------------------------------------------------------
 // VALIDATION FUNCTIONS
@@ -332,6 +320,8 @@ async function validatePurchaseData(formData: PurchaseData): Promise<{
 // ----------------------------------------------------------------------
 // PAYMENT SUBMISSION - Only initiates payment
 // ----------------------------------------------------------------------
+const PAYMENT_API_URL = 'https://payment.osbornsexhibition.co.tz/api/v1/checkout/mno';
+
 async function submitPayment(
   ticketId: number,
   ticketCode: string,
@@ -347,16 +337,14 @@ async function submitPayment(
   const logger = new Logger('payment-submission');
 
   try {
-    // Generate proper external ID with prefix
-    const externalId = generateExternalId();
+    const externalId = `TICKET-${ticketCode}`;
 
-    // Prepare payload for Laravel API - include externalId
+    // Prepare payload for Laravel API
     const apiPayload = {
       accountNumber: formData.phone,
       amount: formData.totalAmount,
       currency: 'TZS',
       provider: formData.paymentMethodId,
-      externalId, // Include externalId in payload
       reference: ticketCode,
       customerName: formData.fullName,
       description: `Ticket Purchase - ${ticketCode}`
@@ -367,10 +355,10 @@ async function submitPayment(
       payload: apiPayload
     });
 
-    // Call the Laravel API
+    // Call the external Laravel API
     const response = await fetch(PAYMENT_API_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify(apiPayload),
       cache: 'no-store'
     });
@@ -378,31 +366,23 @@ async function submitPayment(
     const apiResponse = await response.json();
     logger.response('Payment API response received', apiResponse);
 
-    // Determine success based on API response
-    const isSuccess = response.ok && (
-      apiResponse.status === 'success' || 
-      apiResponse.success === true ||
-      apiResponse.azampay_response?.success === true
-    );
-    
-    const status = isSuccess ? 'PENDING' : 'FAILED';
-    const errorMessage = status === 'FAILED'
-      ? apiResponse.message || apiResponse.error || `Payment submission failed with status ${response.status}`
-      : null;
-
     // Determine IDs from API response or fallback
     const finalExternalId = apiResponse.externalId || externalId;
     const referenceId = apiResponse.reference || ticketCode;
     const transId = apiResponse.transid || finalExternalId;
-    const provider = apiResponse.provider || formData.paymentMethodId.toUpperCase();
 
-    // Insert transaction into DB
+    // Insert PENDING / SUCCESS transaction
+    const status = response.ok && apiResponse.status === 'success' ? 'PENDING' : 'FAILED';
+    const errorMessage = status === 'FAILED' 
+      ? apiResponse.message || apiResponse.error || `Payment submission failed with status ${response.status}`
+      : null;
+
     await db.insert(transactions).values({
       ticketId,
       externalId: finalExternalId,
-      reference: referenceId,
-      transId,
-      provider,
+      reference: referenceId,  // new field
+      transId,                 // new field
+      provider: apiResponse.provider || formData.paymentMethodId.toUpperCase(),
       accountNumber: formData.phone,
       amount: formData.totalAmount.toString(),
       status,
@@ -412,20 +392,19 @@ async function submitPayment(
       metadata: JSON.stringify({
         apiResponse,
         submittedAt: new Date().toISOString(),
-        paymentMethod: formData.paymentMethodId,
-        provider: provider
+        paymentMethod: formData.paymentMethodId
       })
     });
 
     const paymentResult: PaymentResult = {
       success: status === 'PENDING',
       method: formData.paymentMethodId,
-      provider,
+      provider: apiResponse.provider || formData.paymentMethodId.toUpperCase(),
       transactionId: transId,
       externalId: finalExternalId,
       data: apiResponse.azampay_data || apiResponse.data,
       status,
-      message: apiResponse.message ?? (status === 'PENDING' ? 'Payment submitted successfully. Please check your phone for PIN confirmation.' : 'Payment failed.'),
+      message: apiResponse.message ?? (status === 'PENDING' ? 'Payment submitted successfully.' : 'Payment failed.'),
       apiResponse
     };
 
@@ -433,43 +412,15 @@ async function submitPayment(
       passed: status === 'PENDING',
       step: 'PAYMENT_SUBMISSION',
       message: status === 'PENDING'
-        ? `Payment submitted via ${provider}`
+        ? `Payment submitted via ${formData.paymentMethodId}`
         : `Payment submission failed: ${errorMessage}`,
-      details: { 
-        status, 
-        requiresPin: status === 'PENDING', 
-        errorMessage,
-        externalId: finalExternalId,
-        transactionId: transId
-      }
+      details: { status, requiresPin: status === 'PENDING', errorMessage }
     });
 
-    // Update ticket status based on payment result
+    // Update ticket if failed
     if (status === 'FAILED') {
       await db.update(tickets)
-        .set({ 
-          paymentStatus: 'FAILED', 
-          status: 'FAILED', 
-          updatedAt: new Date(),
-          metadata: JSON.stringify({
-            ...JSON.parse((await db.select().from(tickets).where(eq(tickets.id, ticketId)).then(rows => rows[0]))?.metadata || '{}'),
-            paymentError: errorMessage,
-            paymentFailedAt: new Date().toISOString()
-          })
-        })
-        .where(eq(tickets.id, ticketId));
-    } else {
-      // Update ticket with payment reference
-      await db.update(tickets)
-        .set({ 
-          updatedAt: new Date(),
-          metadata: JSON.stringify({
-            ...JSON.parse((await db.select().from(tickets).where(eq(tickets.id, ticketId)).then(rows => rows[0]))?.metadata || '{}'),
-            paymentExternalId: finalExternalId,
-            paymentTransactionId: transId,
-            paymentSubmittedAt: new Date().toISOString()
-          })
-        })
+        .set({ paymentStatus: 'FAILED', status: 'FAILED', updatedAt: new Date() })
         .where(eq(tickets.id, ticketId));
     }
 
@@ -483,37 +434,32 @@ async function submitPayment(
   } catch (paymentError: any) {
     logger.critical('Error contacting external payment API', paymentError);
 
-    // Don't create another transaction to avoid cascade errors
-    // Just update the ticket with error information
-    const currentTicket = await db.select()
-      .from(tickets)
-      .where(eq(tickets.id, ticketId))
-      .then(rows => rows[0]);
+    const errorExternalId = `ERROR-${ticketCode}`;
 
-    if (currentTicket) {
-      await db.update(tickets)
-        .set({ 
-          paymentStatus: 'FAILED', 
-          status: 'FAILED', 
-          updatedAt: new Date(),
-          metadata: JSON.stringify({
-            ...JSON.parse(currentTicket.metadata || '{}'),
-            paymentError: paymentError.message,
-            paymentErrorStack: paymentError.stack,
-            paymentErrorTimestamp: new Date().toISOString()
-          })
-        })
-        .where(eq(tickets.id, ticketId));
-    }
+    await db.insert(transactions).values({
+      ticketId,
+      externalId: errorExternalId,
+      reference: ticketCode,
+      transId: errorExternalId,
+      provider: formData.paymentMethodId.toUpperCase(),
+      accountNumber: formData.phone,
+      amount: formData.totalAmount.toString(),
+      status: 'ERROR',
+      currency: 'TZS',
+      message: paymentError.message,
+      rawResponse: { error: paymentError.message },
+      metadata: JSON.stringify({ error: paymentError.message, timestamp: new Date().toISOString() })
+    });
+
+    await db.update(tickets)
+      .set({ paymentStatus: 'FAILED', status: 'FAILED', updatedAt: new Date() })
+      .where(eq(tickets.id, ticketId));
 
     validationResults.push({
       passed: false,
       step: 'PAYMENT_SUBMISSION',
       message: 'Network or server error during payment submission',
-      details: { 
-        error: paymentError.message,
-        errorType: paymentError.name || 'NetworkError'
-      }
+      details: { error: paymentError.message }
     });
 
     return {
@@ -524,6 +470,7 @@ async function submitPayment(
     };
   }
 }
+
 
 // ----------------------------------------------------------------------
 // CREATE ATTENDEES
@@ -610,19 +557,30 @@ async function sendSubmissionNotification(
   try {
     let smsMessage = '';
     let smsStatus = 'pending';
+    const paymentMethodName = formData.paymentMethodId.toUpperCase();
     
     if (formData.ticketType === 'ADULT') {
+      // Payment submitted successfully - PIN confirmation required
+     smsMessage = `Hello ${formData.fullName}!\n\n`;
+      smsMessage += `Your ticket purchase for ${day.name} - ${session.name} has been submitted.\n`;
+      smsMessage += `Please wait while  we confirm your transaction.`;
+     
+    }
+
+      if (formData.ticketType === 'CHILD') {
+      // Payment submitted successfully - PIN confirmation required
+     smsMessage = `Hello ${formData.fullName}!\n\n`;
+      smsMessage += `Your ticket purchase for ${day.name} - ${session.name} has been submitted.\n`;
+      smsMessage += `Please wait while  we confirm your transaction.`;
+     
+    }
+    
+    // // Add student reminder if applicable
+    if (formData.ticketType === 'STUDENT' && formData.studentId) {
       smsMessage = `Hello ${formData.fullName}!\n\n`;
       smsMessage += `Your ticket purchase for ${day.name} - ${session.name} has been submitted.\n`;
       smsMessage += `Please wait while we confirm your transaction.`;
-    } else if (formData.ticketType === 'CHILD') {
-      smsMessage = `Hello ${formData.fullName}!\n\n`;
-      smsMessage += `Your ticket purchase for ${day.name} - ${session.name} has been submitted.\n`;
-      smsMessage += `Please wait while we confirm your transaction.`;
-    } else if (formData.ticketType === 'STUDENT') {
-      smsMessage = `Hello ${formData.fullName}!\n\n`;
-      smsMessage += `Your ticket purchase for ${day.name} - ${session.name} has been submitted.\n`;
-      smsMessage += `Please wait while we confirm your transaction.`;
+    
     }
     
     // Send SMS
@@ -713,39 +671,37 @@ export async function submitTicketPurchase(formData: PurchaseData): Promise<Paym
 
     logger.info('Creating ticket record...', { ticketCode });
     
-    // Insert the ticket without .$returningId() - it might not be supported
-    await db.insert(tickets).values({
-      sessionId: formData.sessionId,
-      ticketCode: ticketCode,
-      purchaserName: formData.fullName,
-      purchaserPhone: formData.phone,
-      ticketType: formData.ticketType,
-      totalAmount: formData.totalAmount.toString(),
-      status: 'PENDING',
-      paymentStatus: 'PENDING',
-      paymentMethodId: formData.paymentMethodId,
-      metadata: JSON.stringify({
-        studentId: formData.studentId,
-        institution: formData.institution,
-        institutionName: formData.institutionName,
-        dayName: day.name,
-        sessionName: session.name,
-        submittedAt: new Date().toISOString()
-      })
-    });
+// Insert the ticket
+const insertResult = await db.insert(tickets).values({
+  sessionId: formData.sessionId,
+  ticketCode: ticketCode,
+  purchaserName: formData.fullName,
+  purchaserPhone: formData.phone,
+  ticketType: formData.ticketType,
+  totalAmount: formData.totalAmount.toString(),
+  status: 'PENDING',
+  paymentStatus: 'PENDING',
+  paymentMethodId: formData.paymentMethodId,
+  metadata: JSON.stringify({
+    studentId: formData.studentId,
+    institution: formData.institution,
+    institutionName: formData.institutionName,
+    dayName: day.name,
+    sessionName: session.name,
+    submittedAt: new Date().toISOString()
+  })
+});
 
-    // Query for the ticket we just inserted using the unique ticketCode
-    const insertedTicket = await db.select()
-      .from(tickets)
-      .where(eq(tickets.ticketCode, ticketCode))
-      .limit(1)
-      .then(rows => rows[0]);
+// Get the inserted ticket ID
+const ticketId = insertResult.insertId;
 
-    if (!insertedTicket || !insertedTicket.id) {
-      throw new Error('Could not retrieve ticket after creation');
-    }
+// Optionally fetch the full ticket row
+const ticketResult = await db.query.tickets.findFirst({
+  where: eq(tickets.id, ticketId),
+});
+;
 
-    const ticketId = insertedTicket.id;
+    
     
     logger.info('Ticket record created', { ticketId, ticketCode });
     
@@ -769,51 +725,43 @@ export async function submitTicketPurchase(formData: PurchaseData): Promise<Paym
     // Send submission notification only
     await sendSubmissionNotification(formData, ticketCode, day, session, payment.paymentResult, validationResults);
 
-    // Check if payment was successful
-    if (!payment.success) {
-      logger.error('Payment submission failed', { 
-        ticketId, 
-        error: payment.error 
-      });
+    // if (!payment.success) {
+    //   logger.error('Payment submission failed', { 
+    //     ticketId, 
+    //     error: payment.error 
+    //   });
       
-      return {
-        success: false,
-        error: payment.error,
-        message: payment.error || 'Payment submission failed',
-        ticketId: ticketId,
-        ticketCode: ticketCode,
-        validationResults,
-        paymentResult: payment.paymentResult,
-        summary: {
-          purchaser: formData.fullName,
-          phone: formData.phone,
-          event: `${day.name} - ${session.name}`,
-          date: new Date(day.date).toLocaleDateString(),
-          time: `${session.startTime} - ${session.endTime}`,
-          ticketType: formData.ticketType,
-          ...(formData.ticketType === 'STUDENT' && {
-            studentId: formData.studentId,
-            institution: formData.institution,
-            institutionName: formData.institutionName
-          }),
-          quantity: formData.quantity,
-          amount: formData.totalAmount,
-          paymentMethod: formData.paymentMethodId,
-          paymentMethodName: paymentMethod.name,
-          paymentStatus: 'FAILED',
-          ticketStatus: 'FAILED',
-          transactionId: payment.paymentResult?.transactionId,
-          externalId: payment.paymentResult?.externalId,
-          message: payment.error || 'Payment submission failed',
-          note: 'Please try again or contact support.',
-          nextSteps: [
-            'Try submitting the payment again',
-            'Check your payment method details',
-            'Contact support if issue persists'
-          ]
-        }
-      };
-    }
+    //   return {
+    //     success: false,
+    //     error: payment.error,
+    //     message: payment.error || 'Payment submission failed',
+    //     ticketId: ticketId,
+    //     ticketCode: ticketCode,
+    //     validationResults,
+    //     paymentResult: payment.paymentResult,
+    //     summary: {
+    //       purchaser: formData.fullName,
+    //       phone: formData.phone,
+    //       event: `${day.name} - ${session.name}`,
+    //       date: new Date(day.date).toLocaleDateString(),
+    //       time: `${session.startTime} - ${session.endTime}`,
+    //       ticketType: formData.ticketType,
+    //       ...(formData.ticketType === 'STUDENT' && {
+    //         studentId: formData.studentId,
+    //         institution: formData.institution,
+    //         institutionName: formData.institutionName
+    //       }),
+    //       quantity: formData.quantity,
+    //       amount: formData.totalAmount,
+    //       paymentMethod: formData.paymentMethodId,
+    //       paymentMethodName: paymentMethod.name,
+    //       paymentStatus: 'FAILED',
+    //       ticketStatus: 'FAILED',
+    //       message: payment.error || 'Payment submission failed',
+    //       note: 'Please try again or contact support.'
+    //     }
+    //   };
+    // }
 
     validationResults.push(...payment.validationResults);
     
@@ -852,25 +800,18 @@ export async function submitTicketPurchase(formData: PurchaseData): Promise<Paym
         amount: formData.totalAmount,
         paymentMethod: formData.paymentMethodId,
         paymentMethodName: paymentMethod.name,
-        paymentStatus: payment.paymentResult?.status === 'PENDING' ? 'SUBMITTED' : payment.paymentResult?.status || 'SUBMITTED',
+        paymentStatus: 'SUBMITTED',
         ticketStatus: 'PENDING',
         transactionId: payment.paymentResult?.transactionId,
         externalId: payment.paymentResult?.externalId,
-        provider: payment.paymentResult?.provider,
-        message: payment.paymentResult?.message || 'Payment submitted successfully.',
+        message: payment.paymentResult?.message || 'Payment submitted',
         note: 'Please check your phone and enter your PIN to complete the payment.',
         nextSteps: [
           'Check your phone for payment request',
           'Enter your PIN to confirm payment',
           'Payment will be verified automatically',
         ],
-        importantNote: 'Enter your PIN on your phone when prompted to complete the payment.',
-        supportInfo: {
-          ticketCode: ticketCode,
-          externalId: payment.paymentResult?.externalId,
-          transactionId: payment.paymentResult?.transactionId,
-          reference: ticketCode
-        }
+        importantNote: 'Enter your PIN on your phone when prompted to complete the payment.'
       }
     };
 
