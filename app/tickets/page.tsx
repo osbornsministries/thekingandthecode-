@@ -44,7 +44,7 @@ export default async function TicketPage() {
               <span className="text-[#A81010]">TICKET</span>
             </h1>
             <p className="title-reveal invisible mt-6 text-gray-700 font-serif text-lg max-w-md">
-              Join us for a magical evening of joy, music, and celebration. Secure your spot now.
+              Join us for a magical moment of joy, music, and celebration. Secure your spot now.
             </p>
           </div>
 
