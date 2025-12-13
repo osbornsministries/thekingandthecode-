@@ -118,50 +118,75 @@ export async function POST(req: Request) {
 /* ------------------- HANDLERS ------------------- */
 
 async function handleSuccess(transaction: any, cb: ReturnType<typeof normalizeCallback>) {
-  // 1️⃣ Update transaction status
-  await db.update(transactions)
-    .set({ status: "success" })
-    .where(eq(transactions.id, transaction.id));
+  console.log(`[handleSuccess] Start processing transaction ${transaction.id}`);
 
-  // 2️⃣ Only update ticket if linked
+  // 1️⃣ Update transaction status
+  try {
+    await db.update(transactions)
+      .set({ status: "success" })
+      .where(eq(transactions.id, transaction.id));
+    console.log(`[handleSuccess] Transaction ${transaction.id} status updated to SUCCESS`);
+  } catch (err) {
+    console.error(`[handleSuccess] Failed to update transaction ${transaction.id}:`, err);
+  }
+
+  // 2️⃣ Ensure ticket exists
   if (!transaction.ticketId) {
-    console.warn(`Transaction ${transaction.id} has no linked ticket for SUCCESS handler.`);
+    console.warn(`[handleSuccess] Transaction ${transaction.id} has no linked ticketId`);
     return;
   }
 
   // 3️⃣ Update ticket status
-  await db.update(tickets)
-    .set({ paymentStatus: "PAID", status: "CONFIRMED" })
-    .where(eq(tickets.id, transaction.ticketId));
+  try {
+    await db.update(tickets)
+      .set({ paymentStatus: "PAID", status: "CONFIRMED" })
+      .where(eq(tickets.id, transaction.ticketId));
+    console.log(`[handleSuccess] Ticket ${transaction.ticketId} status updated to PAID/CONFIRMED`);
+  } catch (err) {
+    console.error(`[handleSuccess] Failed to update ticket ${transaction.ticketId}:`, err);
+  }
 
   // 4️⃣ Fetch ticket info
-  const ticket = await db.query.tickets.findFirst({ where: eq(tickets.id, transaction.ticketId) });
-  if (!ticket) return;
+  let ticket;
+  try {
+    ticket = await db.query.tickets.findFirst({ where: eq(tickets.id, transaction.ticketId) });
+    if (!ticket) {
+      console.warn(`[handleSuccess] Ticket ${transaction.ticketId} not found in DB`);
+      return;
+    }
+    console.log(`[handleSuccess] Ticket fetched:`, ticket);
+  } catch (err) {
+    console.error(`[handleSuccess] Error fetching ticket ${transaction.ticketId}:`, err);
+  }
 
   // 5️⃣ Send SMS notification
   try {
-    await SMSService.sendSMS(
+    const smsResult = await SMSService.sendSMS(
       ticket.purchaserPhone,
       `Hello ${ticket.purchaserName}, your payment is received. Ticket Ref: ${cb.transId}`
     );
+    console.log(`[handleSuccess] SMS sent result:`, smsResult);
   } catch (smsError) {
-    console.error("SMS send failed for SUCCESS:", smsError);
-    // Even if SMS fails, we continue to update session counts
+    console.error(`[handleSuccess] SMS send failed for ticket ${ticket.id}:`, smsError);
   }
 
   // 6️⃣ Update session ticket limits
   try {
+    console.log(`[handleSuccess] Updating session counts for session ${ticket.sessionId}`);
     await updateSessionCountsAfterPurchase(
       ticket.sessionId,
       ticket.ticketType === 'ADULT' ? ticket.totalQuantity : 0,
       ticket.ticketType === 'STUDENT' ? ticket.totalQuantity : 0,
       ticket.ticketType === 'CHILD' ? ticket.totalQuantity : 0
     );
-    console.info(`Session ticket limits updated for session ${ticket.sessionId}`);
+    console.log(`[handleSuccess] Session counts updated for session ${ticket.sessionId}`);
   } catch (limitError) {
-    console.error(`Failed to update session limits for ticket ${ticket.id}:`, limitError);
+    console.error(`[handleSuccess] Failed to update session counts for ticket ${ticket.id}:`, limitError);
   }
+
+  console.log(`[handleSuccess] Finished processing transaction ${transaction.id}`);
 }
+
 
 
 async function handleFailure(transaction: any, cb: ReturnType<typeof normalizeCallback>) {
