@@ -6,8 +6,11 @@ export * from './price';
 export * from './payment';
 export * from './event';
 export * from './session';
-export * from './ticket-tracker'; // ADD THIS
+export * from './ticket-tracker'; 
 export * from './adult';
 export * from './student';
 export * from './children';
-export * from './triggers/ticket-tracking'; //
+export * from './triggers/ticket-tracking'; 
+export * from './session-limits';
+
+

@@ -50,7 +50,7 @@ export const tickets = mysqlTable('tickets', {
 
 
 export const agentAssignments = mysqlTable('agent_assignments', {
-  id: serial('id').primaryKey(),
+id: int('id').autoincrement().primaryKey(),
   ticketId: int('ticket_id').notNull().references(() => tickets.id, { onDelete: 'cascade' }),
   agentId: varchar('agent_id', { length: 50 }).notNull(), // User ID of the agent
   assignedTo: varchar('assigned_to', { length: 100 }), // Name of person assigned to

@@ -1,55 +1,62 @@
 import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
-import { authConfig } from "../auth.config"; // Import the config we just made
+import { authConfig } from "../auth.config";
 import { db } from "@/lib/db/db";
-import { users } from "@/lib/drizzle/schema"; // Adjust path if needed
+import { users } from "@/lib/drizzle/schema";
 import { eq } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
-  ...authConfig, // Spread the config here
+  ...authConfig,
+
   providers: [
     Credentials({
       name: "Credentials",
+
       credentials: {
         email: { label: "Email", type: "text" },
-        password: { label: "Password", type: "password" }
+        password: { label: "Password", type: "password" },
       },
+
       async authorize(credentials) {
-        // 1. Validate input
-        if (!credentials?.email || !credentials?.password) return null;
+        if (!credentials?.email || !credentials?.password) {
+          return null;
+        }
 
         try {
-          // 2. Fetch User (ensure email is string)
-          const email = credentials.email as string;
-          
-          const result = await db
-            .select()
+          // 1️⃣ Fetch user from DB
+          const user = await db
+            .select({
+              id: users.id,
+              name: users.name,
+              email: users.email,
+              password: users.password,
+              role: users.role,
+            })
             .from(users)
-            .where(eq(users.email, email))
-            .limit(1);
+            .where(eq(users.email, credentials.email))
+            .limit(1)
+            .then(res => res[0]);
 
-          const user = result[0];
+          if (!user) return null;
 
-          if (!user || !user.password) return null;
-
-          // 3. Verify Password
-          const passwordsMatch = await bcrypt.compare(
-            credentials.password as string, 
+          // 2️⃣ Compare password
+          const isValid = await bcrypt.compare(
+            credentials.password,
             user.password
           );
 
-          if (passwordsMatch) {
-            return {
-              id: user.id.toString(),
-              name: user.name,
-              email: user.email,
-              role: user.role ?? "user",
-            };
-          }
-          return null;
+          if (!isValid) return null;
+
+          // 3️⃣ Return user object (NO password)
+          return {
+            id: user.id.toString(),
+            name: user.name,
+            email: user.email,
+            role: user.role ?? "user",
+          };
         } catch (error) {
-          console.error("Auth Error:", error);
+          console.error("Authorize error:", error);
           return null;
         }
       },
