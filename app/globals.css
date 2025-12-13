@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+
+
+@font-face {
+  font-family: "MisticalSpring";
+  src: url("/fonts/Mistical-Spring-BF68f20c6934438.otf") format("opentype");
+  font-weight: normal;
+  font-style: normal;
+}
+
+/* Handwriting Script */
+@font-face {
+  font-family: "Bellarina";
+  src: url("/fonts/Bellarina-TTF.ttf") format("truetype");
+  font-weight: normal;
+  font-style: normal;
+}
+
+/* Bold Serif Display (Lostamasta) */
+@font-face {
+  font-family: "Lostamasta";
+  src: url("/fonts/Demo_Fonts/Fontspring-DEMO-lostamasta-black.otf") format("opentype");
+  font-weight: 900;
+  font-style: normal;
+}
+
+
+/* Add a utility class inside @layer utilities */
+@layer utilities {
+  .font-bellarina {
+    font-family: "Bellarina", cursive;
+  }
+}
+
+
+@theme {
+  /* 1. Define Custom Colors directly here */
+  --color-christmas-red: #A81010;
+  --color-christmas-gold: #C5A059;
+  --color-christmas-dark: #1A1A1A;
+
+  /* 2. Map Fonts to the variables set in layout.tsx */
+  --font-serif: var(--font-playfair), ui-serif, Georgia, serif;
+  --font-script: var(--font-great-vibes), cursive;
+  
+  /* 3. Define the Animation (Optional, or keep in standard CSS below) */
+  --animate-snowfall: snowfall 10s linear infinite;
+}
+
+/* Standard CSS for specific animation keyframes */
+@keyframes snowfall {
+  0% {
+    transform: translateY(-10vh) translateX(0);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(100vh) translateX(20px);
+    opacity: 0.3;
+  }
+}
+
+/* Custom Utility Class for the snowflake */
+.snowflake {
+  position: absolute;
+  top: -10px;
+  color: #d1d5db;
+  animation: snowfall linear infinite; /* Fallback */
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* Base styles */
+body {
+  background: linear-gradient(to bottom, transparent, #ffffff) #f5f5f5;
+}

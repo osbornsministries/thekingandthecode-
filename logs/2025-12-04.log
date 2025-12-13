@@ -1,0 +1,6 @@
+[2025-12-04T14:50:51.051Z] [REQUEST] New Ticket Purchase Initiated | Data: {"ticketType":"VVIP","adults":1,"children":1,"paymentMethod":"mpesa","fullName":"isaya test ","phone":"0794809887","totalAmount":150000}
+[2025-12-04T14:50:51.968Z] [RESPONSE] AzamPay Response Received | Data: {"success":false,"message":"Authentication failed"}
+[2025-12-04T14:50:54.342Z] [INFO] SMS sent to 255794809887 | Data: {"message":"Hello isaya test , payment failed. Reason: Authentication failed. Please try again."}
+[2025-12-04T14:51:47.284Z] [REQUEST] New Ticket Purchase Initiated | Data: {"ticketType":"VVIP","adults":1,"children":1,"paymentMethod":"airtel","fullName":"lisa ","phone":"0682879712","totalAmount":150000}
+[2025-12-04T14:51:47.670Z] [RESPONSE] AzamPay Response Received | Data: {"success":false,"message":"Authentication failed"}
+[2025-12-04T14:51:48.930Z] [INFO] SMS sent to 255682879712 | Data: {"message":"Hello lisa , payment failed. Reason: Authentication failed. Please try again."}

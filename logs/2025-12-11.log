@@ -1,0 +1,10 @@
+[2025-12-11T16:22:15.028Z] [INFO] [TestSMSRoute] Starting SMS service test
+[2025-12-11T16:22:15.039Z] [INFO] [TestSMSRoute] Test parameters | Data: {
+  "testPhone": "0712345678",
+  "testMessage": "Test SMS from your application",
+  "hasEnvVars": false
+}
+[2025-12-11T16:22:15.044Z] [WARN] [TestSMSRoute] Missing credentials test | Data: {
+  "BRIQ_API_KEY": "missing",
+  "BRIQ_SENDER_ID": "missing"
+}

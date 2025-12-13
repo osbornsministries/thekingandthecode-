@@ -1,0 +1,21 @@
+[2025-12-03T05:25:22.411Z] [REQUEST] New Ticket Purchase Initiated | Data: {"ticketType":"VVIP","adults":1,"children":0,"paymentMethod":"mpesa","fullName":"isaya mbwaga","phone":"0794809887","totalAmount":100000}
+[2025-12-03T05:25:22.843Z] [RESPONSE] AzamPay Response Received | Data: {"success":false,"message":"Authentication failed"}
+[2025-12-03T05:25:22.858Z] [ERROR] Briq credentials missing in .env
+[2025-12-03T05:26:17.745Z] [REQUEST] New Ticket Purchase Initiated | Data: {"ticketType":"VIP","adults":1,"children":0,"paymentMethod":"mpesa","fullName":"isaya juma","phone":"0794809887","totalAmount":50000}
+[2025-12-03T05:26:18.086Z] [RESPONSE] AzamPay Response Received | Data: {"success":false,"message":"Authentication failed"}
+[2025-12-03T05:26:18.094Z] [ERROR] Briq credentials missing in .env
+[2025-12-03T05:27:53.453Z] [REQUEST] New Ticket Purchase Initiated | Data: {"ticketType":"VIP","adults":1,"children":0,"paymentMethod":"mpesa","fullName":"isaya juma","phone":"0794809887","totalAmount":50000}
+[2025-12-03T05:27:53.788Z] [RESPONSE] AzamPay Response Received | Data: {"success":false,"message":"Authentication failed"}
+[2025-12-03T05:27:55.829Z] [INFO] SMS sent to 255794809887 | Data: {"message":"Hello isaya juma, payment failed. Reason: Authentication failed. Please try again."}
+[2025-12-03T05:31:48.168Z] [REQUEST] New Ticket Purchase Initiated | Data: {"ticketType":"VIP","adults":1,"children":0,"paymentMethod":"mpesa","fullName":"isaya juma","phone":"0794809887","totalAmount":50000}
+[2025-12-03T05:31:48.589Z] [RESPONSE] AzamPay Response Received | Data: {"success":false,"message":"Authentication failed"}
+[2025-12-03T05:31:49.614Z] [INFO] SMS sent to 255794809887 | Data: {"message":"Hello isaya juma, payment failed. Reason: Authentication failed. Please try again."}
+[2025-12-03T07:36:35.758Z] [REQUEST] New Ticket Purchase Initiated | Data: {"ticketType":"REGULAR","adults":1,"children":0,"paymentMethod":"mpesa","fullName":"test user ","phone":"0794809887","totalAmount":20000}
+[2025-12-03T07:36:36.642Z] [RESPONSE] AzamPay Response Received | Data: {"success":false,"message":"Authentication failed"}
+[2025-12-03T07:36:36.684Z] [ERROR] SMS Network Error | Data: {}
+[2025-12-03T16:51:55.339Z] [REQUEST] New Ticket Purchase Initiated | Data: {"ticketType":"VVIP","adults":1,"children":1,"paymentMethod":"tigopesa","fullName":"TEST","phone":"0711889590","totalAmount":150000}
+[2025-12-03T16:51:57.060Z] [RESPONSE] AzamPay Response Received | Data: {"success":false,"message":"Authentication failed"}
+[2025-12-03T16:52:01.693Z] [INFO] SMS sent to 255711889590 | Data: {"message":"Hello TEST, payment failed. Reason: Authentication failed. Please try again."}
+[2025-12-03T16:59:51.771Z] [REQUEST] New Ticket Purchase Initiated | Data: {"ticketType":"VVIP","adults":1,"children":1,"paymentMethod":"mpesa","fullName":"TEST ","phone":"0794809887","totalAmount":150000}
+[2025-12-03T16:59:53.512Z] [RESPONSE] AzamPay Response Received | Data: {"success":false,"message":"Authentication failed"}
+[2025-12-03T16:59:55.132Z] [INFO] SMS sent to 255794809887 | Data: {"message":"Hello TEST , payment failed. Reason: Authentication failed. Please try again."}
