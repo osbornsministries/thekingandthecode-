@@ -5,6 +5,12 @@ const nextConfig = {
     ignoreBuildErrors: true,
   },
 
+  productionBrowserSourceMaps: false, // disable source maps in prod
+
+  devIndicators: {
+    buildActivity: false,
+  },
+
   // Disable ESLint during build (⚠ deprecated)
   eslint: {
     ignoreDuringBuilds: true,

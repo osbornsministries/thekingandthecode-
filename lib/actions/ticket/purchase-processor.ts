@@ -9,6 +9,11 @@ import {
   eventSessions, eventDays, ticketPrices, paymentMethods
 } from '@/lib/drizzle/schema';
 import { eq, and } from 'drizzle-orm';
+import {
+  updateSessionCountsAfterPurchase
+} from '../../utils/session-limits';
+// } from '/../utils/session-limits-utils';
+
 
 // ----------------------------------------------------------------------
 // TYPES
@@ -60,6 +65,8 @@ export interface PaymentSubmissionResult {
   error?: string;
   summary?: any;
 }
+
+
 
 // ----------------------------------------------------------------------
 // VALIDATION FUNCTIONS
@@ -328,10 +335,10 @@ async function submitPayment(
   requiresPinConfirmation: boolean;
 }> {
   const logger = new Logger('payment-submission');
-  
+
   try {
     const externalId = `TICKET-${ticketCode}`;
-    
+
     // Prepare payload for Laravel API
     const apiPayload = {
       accountNumber: formData.phone,
@@ -342,186 +349,128 @@ async function submitPayment(
       customerName: formData.fullName,
       description: `Ticket Purchase - ${ticketCode}`
     };
-    
-    logger.request('Submitting payment to external API', { 
-      url: PAYMENT_API_URL, 
-      payload: apiPayload 
+
+    logger.request('Submitting payment to external API', {
+      url: PAYMENT_API_URL,
+      payload: apiPayload
     });
 
     // Call the external Laravel API
     const response = await fetch(PAYMENT_API_URL, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      },
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify(apiPayload),
       cache: 'no-store'
     });
 
     const apiResponse = await response.json();
     logger.response('Payment API response received', apiResponse);
-    
-    // Check for API success
-    if (response.ok && apiResponse.status === 'success') {
-      
-      // Successful Initiation - Create PENDING transaction
-      await db.insert(transactions).values({
-        ticketId: ticketId,
-        externalId: apiResponse.externalId || externalId,
-        provider: apiResponse.provider || formData.paymentMethodId.toUpperCase(),
-        accountNumber: formData.phone,
-        amount: formData.totalAmount.toString(),
-        status: 'PENDING',
-        currency: 'TZS',
-        metadata: JSON.stringify({
-          apiResponse: apiResponse,
-          submittedAt: new Date().toISOString(),
-          paymentMethod: formData.paymentMethodId
-        })
-      });
 
-      const paymentResult: PaymentResult = {
-        success: true,
-        method: formData.paymentMethodId,
-        provider: apiResponse.provider || formData.paymentMethodId.toUpperCase(),
-        transactionId: apiResponse.externalId || externalId,
-        externalId: apiResponse.externalId || externalId,
-        data: apiResponse.azampay_data || apiResponse.data,
-        status: 'PENDING',
-        message: apiResponse.message || 'Payment submitted successfully.',
-        apiResponse: apiResponse
-      };
+    // Determine IDs from API response or fallback
+    const finalExternalId = apiResponse.externalId || externalId;
+    const referenceId = apiResponse.reference || ticketCode;
+    const transId = apiResponse.transid || finalExternalId;
 
-      validationResults.push({
-        passed: true,
-        step: 'PAYMENT_SUBMISSION',
-        message: `Payment submitted via ${formData.paymentMethodId}`,
-        details: { status: 'SUBMITTED', requiresPin: true }
-      });
+    // Insert PENDING / SUCCESS transaction
+    const status = response.ok && apiResponse.status === 'success' ? 'PENDING' : 'FAILED';
+    const errorMessage = status === 'FAILED' 
+      ? apiResponse.message || apiResponse.error || `Payment submission failed with status ${response.status}`
+      : null;
 
-      return {
-        success: true,
-        paymentResult,
-        validationResults,
-        requiresPinConfirmation: true
-      };
+    await db.insert(transactions).values({
+      ticketId,
+      externalId: finalExternalId,
+      reference: referenceId,  // new field
+      transId,                 // new field
+      provider: apiResponse.provider || formData.paymentMethodId.toUpperCase(),
+      accountNumber: formData.phone,
+      amount: formData.totalAmount.toString(),
+      status,
+      currency: 'TZS',
+      message: errorMessage ?? apiResponse.message ?? undefined,
+      rawResponse: apiResponse,
+      metadata: JSON.stringify({
+        apiResponse,
+        submittedAt: new Date().toISOString(),
+        paymentMethod: formData.paymentMethodId
+      })
+    });
 
-    } else {
-      // Payment Submission Failed
-      const errorMessage = apiResponse.message || 
-                          apiResponse.error || 
-                          `Payment submission failed with status ${response.status}`;
-      
-      const errorDetails = apiResponse.errors || 
-                          apiResponse.azampay_response || 
-                          { status: response.status, response: apiResponse };
+    const paymentResult: PaymentResult = {
+      success: status === 'PENDING',
+      method: formData.paymentMethodId,
+      provider: apiResponse.provider || formData.paymentMethodId.toUpperCase(),
+      transactionId: transId,
+      externalId: finalExternalId,
+      data: apiResponse.azampay_data || apiResponse.data,
+      status,
+      message: apiResponse.message ?? (status === 'PENDING' ? 'Payment submitted successfully.' : 'Payment failed.'),
+      apiResponse
+    };
 
-      // Create FAILED transaction
-      await db.insert(transactions).values({
-        ticketId: ticketId,
-        externalId: externalId,
-        provider: formData.paymentMethodId.toUpperCase(),
-        accountNumber: formData.phone,
-        amount: formData.totalAmount.toString(),
-        status: 'FAILED',
-        currency: 'TZS',
-        errorMessage: errorMessage,
-        metadata: JSON.stringify({
-          errorDetails: errorDetails,
-          submittedAt: new Date().toISOString()
-        })
-      });
+    validationResults.push({
+      passed: status === 'PENDING',
+      step: 'PAYMENT_SUBMISSION',
+      message: status === 'PENDING'
+        ? `Payment submitted via ${formData.paymentMethodId}`
+        : `Payment submission failed: ${errorMessage}`,
+      details: { status, requiresPin: status === 'PENDING', errorMessage }
+    });
 
-      // Update ticket status to FAILED
+    // Update ticket if failed
+    if (status === 'FAILED') {
       await db.update(tickets)
-        .set({ 
-          paymentStatus: 'FAILED',
-          status: 'FAILED',
-          updatedAt: new Date()
-        })
+        .set({ paymentStatus: 'FAILED', status: 'FAILED', updatedAt: new Date() })
         .where(eq(tickets.id, ticketId));
-
-      const paymentResult: PaymentResult = {
-        success: false,
-        method: formData.paymentMethodId,
-        status: 'FAILED',
-        message: errorMessage,
-        apiResponse: apiResponse
-      };
-
-      logger.error('Payment submission failed', { errorDetails, paymentResult });
-      
-      validationResults.push({
-        passed: false,
-        step: 'PAYMENT_SUBMISSION',
-        message: `Payment submission failed: ${errorMessage}`,
-        details: { errorDetails, paymentResult }
-      });
-
-      return {
-        success: false,
-        error: errorMessage,
-        paymentResult,
-        validationResults,
-        requiresPinConfirmation: false
-      };
     }
 
+    return {
+      success: status === 'PENDING',
+      paymentResult,
+      validationResults,
+      requiresPinConfirmation: status === 'PENDING'
+    };
+
   } catch (paymentError: any) {
-    // Network or uncaught server error
     logger.critical('Error contacting external payment API', paymentError);
-    
-    const externalId = `ERROR-${ticketCode}`;
-    
-    // Create ERROR transaction
+
+    const errorExternalId = `ERROR-${ticketCode}`;
+
     await db.insert(transactions).values({
-      ticketId: ticketId,
-      externalId: externalId,
+      ticketId,
+      externalId: errorExternalId,
+      reference: ticketCode,
+      transId: errorExternalId,
       provider: formData.paymentMethodId.toUpperCase(),
       accountNumber: formData.phone,
       amount: formData.totalAmount.toString(),
       status: 'ERROR',
       currency: 'TZS',
-      errorMessage: paymentError.message,
-      metadata: JSON.stringify({
-        error: paymentError.message,
-        timestamp: new Date().toISOString()
-      })
+      message: paymentError.message,
+      rawResponse: { error: paymentError.message },
+      metadata: JSON.stringify({ error: paymentError.message, timestamp: new Date().toISOString() })
     });
 
-    // Update ticket status
     await db.update(tickets)
-      .set({ 
-        paymentStatus: 'FAILED',
-        status: 'FAILED',
-        updatedAt: new Date()
-      })
+      .set({ paymentStatus: 'FAILED', status: 'FAILED', updatedAt: new Date() })
       .where(eq(tickets.id, ticketId));
-
-    const paymentResult: PaymentResult = {
-      success: false,
-      method: formData.paymentMethodId,
-      status: 'FAILED',
-      message: `Payment system error: ${paymentError.message}`
-    };
 
     validationResults.push({
       passed: false,
       step: 'PAYMENT_SUBMISSION',
       message: 'Network or server error during payment submission',
-      details: { error: paymentError.message, paymentResult }
+      details: { error: paymentError.message }
     });
 
     return {
       success: false,
       error: `Payment system error: ${paymentError.message}`,
-      paymentResult,
       validationResults,
       requiresPinConfirmation: false
     };
   }
 }
+
 
 // ----------------------------------------------------------------------
 // CREATE ATTENDEES
@@ -722,27 +671,37 @@ export async function submitTicketPurchase(formData: PurchaseData): Promise<Paym
 
     logger.info('Creating ticket record...', { ticketCode });
     
-    const [ticketResult] = await db.insert(tickets).values({
-      sessionId: formData.sessionId,
-      ticketCode: ticketCode,
-      purchaserName: formData.fullName,
-      purchaserPhone: formData.phone,
-      ticketType: formData.ticketType,
-      totalAmount: formData.totalAmount.toString(),
-      status: 'PENDING',
-      paymentStatus: 'PENDING',
-      paymentMethodId: formData.paymentMethodId,
-      metadata: JSON.stringify({
-        studentId: formData.studentId,
-        institution: formData.institution,
-        institutionName: formData.institutionName,
-        dayName: day.name,
-        sessionName: session.name,
-        submittedAt: new Date().toISOString()
-      })
-    }).$returningId();
+// Insert the ticket
+const insertResult = await db.insert(tickets).values({
+  sessionId: formData.sessionId,
+  ticketCode: ticketCode,
+  purchaserName: formData.fullName,
+  purchaserPhone: formData.phone,
+  ticketType: formData.ticketType,
+  totalAmount: formData.totalAmount.toString(),
+  status: 'PENDING',
+  paymentStatus: 'PENDING',
+  paymentMethodId: formData.paymentMethodId,
+  metadata: JSON.stringify({
+    studentId: formData.studentId,
+    institution: formData.institution,
+    institutionName: formData.institutionName,
+    dayName: day.name,
+    sessionName: session.name,
+    submittedAt: new Date().toISOString()
+  })
+});
 
-    const ticketId = ticketResult.id;
+// Get the inserted ticket ID
+const ticketId = insertResult.insertId;
+
+// Optionally fetch the full ticket row
+const ticketResult = await db.query.tickets.findFirst({
+  where: eq(tickets.id, ticketId),
+});
+;
+
+    
     
     logger.info('Ticket record created', { ticketId, ticketCode });
     

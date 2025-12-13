@@ -5,26 +5,26 @@ import { tickets } from './tickets';
 export const transactions = mysqlTable('transactions', {
   id: int('id').autoincrement().primaryKey(),
   
-  // Foreign Key to Ticket
-  ticketId: int('ticket_id').notNull().references(() => tickets.id),
+  ticketId: int('ticket_id', { mode: 'nullable' }).references(() => tickets.id), // nullable
+
+  externalId: varchar('external_id', { length: 255, mode: 'nullable' }),
+  reference: varchar('reference', { length: 255, mode: 'nullable' }),
+  transId: varchar('trans_id', { length: 255, mode: 'nullable' }),
+
+  provider: varchar('provider', { length: 50, mode: 'nullable' }),
+  accountNumber: varchar('account_number', { length: 50, mode: 'nullable' }),
   
-  // AzamPay Specifics
-  externalId: varchar('external_id', { length: 255 }).unique().notNull(), // Our unique ref sent to Azam
-  provider: varchar('provider', { length: 50 }).notNull(), // Airtel, Mpesa, etc.
-  accountNumber: varchar('account_number', { length: 50 }).notNull(), // Phone number paying
-  
-  amount: decimal('amount', { precision: 10, scale: 2 }).notNull(),
+  amount: decimal('amount', { precision: 10, scale: 2, mode: 'nullable' }),
   currency: varchar('currency', { length: 10 }).default('TZS'),
-  
-  // Response Data
-  status: varchar('status', { length: 50 }).default('PENDING'), // success, failed
-  message: varchar('message', { length: 255 }),
-  rawResponse: json('raw_response'), // Store full API response for debugging
-  
+
+  status: varchar('status', { length: 50, mode: 'nullable' }).default('PENDING'),
+  message: varchar('message', { length: 255, mode: 'nullable' }),
+  rawResponse: json('raw_response', { mode: 'nullable' }),
+
   createdAt: timestamp('created_at').defaultNow(),
 });
 
-// Relationships
+// Relations
 export const transactionsRelations = relations(transactions, ({ one }) => ({
   ticket: one(tickets, {
     fields: [transactions.ticketId],

@@ -59,21 +59,28 @@ export async function generatePosTickets(data: PosTicketInput) {
         const uniqueCode = uuidv4(); // Generate unique ID for this specific ticket
 
         // A. Insert Ticket into DB
-        const [newTicket] = await tx.insert(tickets).values({
-          sessionId: sessionId,
-          ticketCode: uniqueCode,
-          ticketType: ticketGroup,
-          purchaserName: 'Walk-in POS',
-          purchaserPhone: 'N/A',
-          totalAmount: unitPrice.toString(),
-          paymentStatus: 'PAID', // Cash sale is always paid
-          status: 'PENDING',
-          paymentMethodId: 'CASH',
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        }).$returningId();
+       const result = await tx.insert(tickets).values({
+            sessionId: sessionId,
+            ticketCode: uniqueCode,
+            ticketType: ticketGroup,
+            purchaserName: 'Walk-in POS',
+            purchaserPhone: 'N/A',
+            totalAmount: unitPrice.toString(),
+            paymentStatus: 'PAID', // Cash sale is always paid
+            status: 'PENDING',
+            paymentMethodId: 'CASH',
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          });
 
-        const ticketId = newTicket.id;
+          // Get the inserted ticket ID (MySQL)
+          const newTicketId = result.insertId;
+
+          // Optionally, fetch the full ticket row if needed
+          const newTicket = await tx.query.tickets.findFirst({
+            where: eq(tickets.id, newTicketId),
+          });
+
 
         // B. Insert Transaction (Linked to Ticket)
         await tx.insert(transactions).values({

@@ -25,16 +25,26 @@ export async function seedTickets() {
     
     // 1. CREATE TICKET (Initially PENDING/UNPAID)
     // We do NOT hardcode 'PAID' here. We let the transaction decide.
-    const [ticket] = await db.insert(tickets).values({
-      ticketCode: ticketCode,
-      sessionId: sessionId,
-      purchaserName: scenario.name,
-      purchaserPhone: scenario.phone,
-      ticketType: 'REGULAR',
-      totalAmount: '50000.00',
-      paymentStatus: 'UNPAID', // <--- Starts as UNPAID
-      status: 'PENDING'
-    }).$returningId();
+// Insert ticket
+const result = await db.insert(tickets).values({
+  ticketCode: ticketCode,
+  sessionId: sessionId,
+  purchaserName: scenario.name,
+  purchaserPhone: scenario.phone,
+  ticketType: 'REGULAR',
+  totalAmount: '50000.00',
+  paymentStatus: 'UNPAID', // Starts as UNPAID
+  status: 'PENDING',
+});
+
+// Get the inserted ticket ID
+const ticketId = result.insertId;
+
+// Optionally fetch the full ticket row if needed
+const ticket = await db.query.tickets.findFirst({
+  where: eq(tickets.id, ticketId),
+});
+
 
     console.log(`   👉 Created Ticket ${ticket.id} for ${scenario.name} (Pending)...`);
 

@@ -12,7 +12,9 @@
     "db:push": "drizzle-kit push",
     "db:seed": "tsx lib/drizzle/seeders/index.ts",
     "db:reset": "tsx lib/drizzle/reset.ts",
-    "db:fresh": "bun run db:reset && bun run db:push && bun run db:seed"
+    "db:fresh": "bun run db:reset && bun run db:push && bun run db:seed",
+    "cron:ticket": "tsx lib/cron/update-sessions.ts"
+
   },
   "dependencies": {
     "@gsap/react": "^2.1.2",

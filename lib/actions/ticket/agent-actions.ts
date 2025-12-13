@@ -321,21 +321,30 @@ export async function assignTicketToAttendee(data: AssignmentData & {
     }
 
     // Create assignment record
-    const [assignment] = await db.insert(agentAssignments).values({
-      ticketId: data.ticketId,
-      agentId: data.agentId,
-      assignedTo: data.assigneeName,
-      assignedPhone: data.assigneePhone,
-      assignedEmail: data.assigneeEmail,
-      assignmentType: 'MANUAL',
-      status: 'COMPLETED',
-      otpCode: data.otpCode,
-      otpExpiry: data.otpExpiry,
-      metadata: {
-        assignedAt: new Date().toISOString(),
-        requireOtp: data.requireOtp || false
-      }
-    }).$returningId();
+ const result = await db.insert(agentAssignments).values({
+  ticketId: data.ticketId,
+  agentId: data.agentId,
+  assignedTo: data.assigneeName,
+  assignedPhone: data.assigneePhone,
+  assignedEmail: data.assigneeEmail,
+  assignmentType: 'MANUAL',
+  status: 'COMPLETED',
+  otpCode: data.otpCode,
+  otpExpiry: data.otpExpiry,
+  metadata: JSON.stringify({
+    assignedAt: new Date().toISOString(),
+    requireOtp: data.requireOtp || false
+  })
+});
+
+// Get the inserted assignment ID (MySQL)
+const assignmentId = result.insertId;
+
+// Optionally, fetch the full assignment row if needed
+const assignment = await db.query.agentAssignments.findFirst({
+  where: eq(agentAssignments.id, assignmentId),
+});
+
 
     // Update the attendee record based on ticket type
     const ticket = await db.select()
