@@ -28,8 +28,6 @@ function normalizeCallback(data: AzamPayCallbackData) {
     pending: "PENDING",
   };
 
-  const normalizedStatus = statusMap[data.transactionstatus.toLowerCase()] ?? "UNKNOWN";
-
   return {
     raw: data,
     reference: data.utilityref,
@@ -38,7 +36,7 @@ function normalizeCallback(data: AzamPayCallbackData) {
     amount: Number(data.amount),
     operator: data.operator,
     message: data.message,
-    status: normalizedStatus,
+    status: statusMap[data.transactionstatus.toLowerCase()] ?? "UNKNOWN",
   };
 }
 
@@ -48,18 +46,15 @@ export async function POST(req: Request) {
     const callback = normalizeCallback(data);
 
     if (!callback.reference) {
-      return NextResponse.json(
-        { success: false, message: "Missing reference (utilityref)" },
-        { status: 400 }
-      );
+      return NextResponse.json({ success: false, message: "Missing reference (utilityref)" }, { status: 400 });
     }
 
-    // Find existing transaction
+    // 1️⃣ Find existing transaction
     let transaction = await db.query.transactions.findFirst({
       where: eq(transactions.externalId, callback.reference),
     });
 
-    // Insert transaction if not found
+    // 2️⃣ Insert transaction if not found
     if (!transaction) {
       const insertResult = await db.insert(transactions).values({
         ticketId: null, // Nullable
@@ -74,14 +69,14 @@ export async function POST(req: Request) {
         rawResponse: callback.raw,
       });
 
-      // Fetch the inserted transaction
+      // Fetch inserted transaction
       const [inserted] = await db.query.transactions.findMany({
         where: eq(transactions.id, insertResult.insertId),
         limit: 1,
       });
       transaction = inserted;
     } else {
-      // Update existing transaction with new callback data
+      // 3️⃣ Update existing transaction
       await db.update(transactions)
         .set({
           status: callback.status.toLowerCase(),
@@ -93,7 +88,7 @@ export async function POST(req: Request) {
         .where(eq(transactions.id, transaction.id));
     }
 
-    // Safely call handlers
+    // 4️⃣ Call status handler safely
     if (transaction) {
       switch (callback.status) {
         case "SUCCESS":
@@ -116,53 +111,76 @@ export async function POST(req: Request) {
     });
   } catch (error) {
     console.error("Webhook error:", error);
-    return NextResponse.json(
-      { success: false, message: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ success: false, message: "Internal server error" }, { status: 500 });
   }
 }
 
 /* ------------------- HANDLERS ------------------- */
 
 async function handleSuccess(transaction: any, cb: ReturnType<typeof normalizeCallback>) {
-  // Update transaction
-  await db.update(transactions).set({ status: "success" }).where(eq(transactions.id, transaction.id));
+  // 1️⃣ Update transaction status
+  await db.update(transactions)
+    .set({ status: "success" })
+    .where(eq(transactions.id, transaction.id));
 
-  // Only update ticket if ticketId exists
-  if (transaction.ticketId) {
-    await db.update(tickets)
-      .set({ paymentStatus: "PAID", status: "CONFIRMED" })
-      .where(eq(tickets.id, transaction.ticketId));
+  // 2️⃣ Only update ticket if linked
+  if (!transaction.ticketId) {
+    console.warn(`Transaction ${transaction.id} has no linked ticket for SUCCESS handler.`);
+    return;
+  }
 
-    const ticket = await db.query.tickets.findFirst({ where: eq(tickets.id, transaction.ticketId) });
-    if (ticket) {
-      await SMSService.sendSMS(ticket.purchaserPhone, `Hello ${ticket.purchaserName}, your payment is received. Ticket Ref: ${cb.transId}`);
+  // 3️⃣ Update ticket status
+  await db.update(tickets)
+    .set({ paymentStatus: "PAID", status: "CONFIRMED" })
+    .where(eq(tickets.id, transaction.ticketId));
 
-      // Update session counts
-      await updateSessionCountsAfterPurchase(
-        ticket.sessionId,
-        ticket.ticketType === 'ADULT' ? ticket.totalQuantity : 0,
-        ticket.ticketType === 'STUDENT' ? ticket.totalQuantity : 0,
-        ticket.ticketType === 'CHILD' ? ticket.totalQuantity : 0
-      );
-    }
+  // 4️⃣ Fetch ticket info
+  const ticket = await db.query.tickets.findFirst({ where: eq(tickets.id, transaction.ticketId) });
+  if (!ticket) return;
+
+  // 5️⃣ Send SMS notification
+  try {
+    await SMSService.sendSMS(
+      ticket.purchaserPhone,
+      `Hello ${ticket.purchaserName}, your payment is received. Ticket Ref: ${cb.transId}`
+    );
+  } catch (smsError) {
+    console.error("SMS send failed for SUCCESS:", smsError);
+    // Even if SMS fails, we continue to update session counts
+  }
+
+  // 6️⃣ Update session ticket limits
+  try {
+    await updateSessionCountsAfterPurchase(
+      ticket.sessionId,
+      ticket.ticketType === 'ADULT' ? ticket.totalQuantity : 0,
+      ticket.ticketType === 'STUDENT' ? ticket.totalQuantity : 0,
+      ticket.ticketType === 'CHILD' ? ticket.totalQuantity : 0
+    );
+    console.info(`Session ticket limits updated for session ${ticket.sessionId}`);
+  } catch (limitError) {
+    console.error(`Failed to update session limits for ticket ${ticket.id}:`, limitError);
   }
 }
+
 
 async function handleFailure(transaction: any, cb: ReturnType<typeof normalizeCallback>) {
   await db.update(transactions).set({ status: "failed" }).where(eq(transactions.id, transaction.id));
 
   if (transaction.ticketId) {
-    await db.update(tickets)
-      .set({ paymentStatus: "FAILED", status: "CANCELLED" })
-      .where(eq(tickets.id, transaction.ticketId));
-
+    await db.update(tickets).set({ paymentStatus: "FAILED", status: "CANCELLED" }).where(eq(tickets.id, transaction.ticketId));
     const ticket = await db.query.tickets.findFirst({ where: eq(tickets.id, transaction.ticketId) });
+
     if (ticket) {
       const msg = `Hello ${ticket.purchaserName}, payment failed. Reason: ${cb.message || "Payment failed"}.`;
-      await SMSService.sendSMS(ticket.purchaserPhone, msg);
+      try {
+        await SMSService.sendSMS(ticket.purchaserPhone, msg);
+      } catch (smsError) {
+        console.error("SMS send failed for FAILURE:", smsError);
+      }
     }
+  } else {
+    console.warn(`Transaction ${transaction.id} has no linked ticket for FAILURE SMS.`);
   }
 }
 
