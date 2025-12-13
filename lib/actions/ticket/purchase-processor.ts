@@ -770,50 +770,50 @@ export async function submitTicketPurchase(formData: PurchaseData): Promise<Paym
     await sendSubmissionNotification(formData, ticketCode, day, session, payment.paymentResult, validationResults);
 
     // Check if payment was successful
-    if (!payment.success) {
-      logger.error('Payment submission failed', { 
-        ticketId, 
-        error: payment.error 
-      });
+    // if (!payment.success) {
+    //   logger.error('Payment submission failed', { 
+    //     ticketId, 
+    //     error: payment.error 
+    //   });
       
-      return {
-        success: false,
-        error: payment.error,
-        message: payment.error || 'Payment submission failed',
-        ticketId: ticketId,
-        ticketCode: ticketCode,
-        validationResults,
-        paymentResult: payment.paymentResult,
-        summary: {
-          purchaser: formData.fullName,
-          phone: formData.phone,
-          event: `${day.name} - ${session.name}`,
-          date: new Date(day.date).toLocaleDateString(),
-          time: `${session.startTime} - ${session.endTime}`,
-          ticketType: formData.ticketType,
-          ...(formData.ticketType === 'STUDENT' && {
-            studentId: formData.studentId,
-            institution: formData.institution,
-            institutionName: formData.institutionName
-          }),
-          quantity: formData.quantity,
-          amount: formData.totalAmount,
-          paymentMethod: formData.paymentMethodId,
-          paymentMethodName: paymentMethod.name,
-          paymentStatus: 'FAILED',
-          ticketStatus: 'FAILED',
-          transactionId: payment.paymentResult?.transactionId,
-          externalId: payment.paymentResult?.externalId,
-          message: payment.error || 'Payment submission failed',
-          note: 'Please try again or contact support.',
-          nextSteps: [
-            'Try submitting the payment again',
-            'Check your payment method details',
-            'Contact support if issue persists'
-          ]
-        }
-      };
-    }
+    //   return {
+    //     success: false,
+    //     error: payment.error,
+    //     message: payment.error || 'Payment submission failed',
+    //     ticketId: ticketId,
+    //     ticketCode: ticketCode,
+    //     validationResults,
+    //     paymentResult: payment.paymentResult,
+    //     summary: {
+    //       purchaser: formData.fullName,
+    //       phone: formData.phone,
+    //       event: `${day.name} - ${session.name}`,
+    //       date: new Date(day.date).toLocaleDateString(),
+    //       time: `${session.startTime} - ${session.endTime}`,
+    //       ticketType: formData.ticketType,
+    //       ...(formData.ticketType === 'STUDENT' && {
+    //         studentId: formData.studentId,
+    //         institution: formData.institution,
+    //         institutionName: formData.institutionName
+    //       }),
+    //       quantity: formData.quantity,
+    //       amount: formData.totalAmount,
+    //       paymentMethod: formData.paymentMethodId,
+    //       paymentMethodName: paymentMethod.name,
+    //       paymentStatus: 'FAILED',
+    //       ticketStatus: 'FAILED',
+    //       transactionId: payment.paymentResult?.transactionId,
+    //       externalId: payment.paymentResult?.externalId,
+    //       message: payment.error || 'Payment submission failed',
+    //       note: 'Please try again or contact support.',
+    //       nextSteps: [
+    //         'Try submitting the payment again',
+    //         'Check your payment method details',
+    //         'Contact support if issue persists'
+    //       ]
+    //     }
+    //   };
+    // }
 
     validationResults.push(...payment.validationResults);
     
