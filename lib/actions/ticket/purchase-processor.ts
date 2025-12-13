@@ -356,7 +356,7 @@ async function submitPayment(
 
   try {
     // Generate externalId with prefix
-    const externalId = `ThekingandtheCode-${ticketCode}-${Date.now()}`;
+    const externalId = generateExternalId();
 
     // Prepare payload for Laravel API
     const apiPayload = {
@@ -364,7 +364,7 @@ async function submitPayment(
       amount: formData.totalAmount,
       currency: 'TZS',
       provider: formData.paymentMethodId,
-      externalId, // prefixed externalId
+      externalId, // Send the prefixed externalId
       reference: ticketCode,
       customerName: formData.fullName,
       description: `Ticket Purchase - ${ticketCode}`
@@ -375,6 +375,7 @@ async function submitPayment(
       payload: apiPayload
     });
 
+    // Call the Laravel API
     const response = await fetch(PAYMENT_API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -385,48 +386,40 @@ async function submitPayment(
     const apiResponse = await response.json();
     logger.response('Payment API response received', apiResponse);
 
-    // Normalize response
     const finalExternalId = apiResponse.externalId || externalId;
-    const transactionId = apiResponse.transactionId || finalExternalId;
-    const status = apiResponse.status === 'success' && response.ok ? 'PENDING' : 'FAILED';
+    const referenceId = apiResponse.reference || ticketCode;
+    const transId = apiResponse.transid || finalExternalId;
+
+    const status = response.ok && apiResponse.status === 'success' ? 'PENDING' : 'FAILED';
     const errorMessage = status === 'FAILED'
       ? apiResponse.message || apiResponse.error || `Payment submission failed with status ${response.status}`
       : null;
 
-    // Flatten relevant response fields for database
-    const dbResponse = {
+    // Insert transaction into DB
+    await db.insert(transactions).values({
       ticketId,
       externalId: finalExternalId,
-      reference: ticketCode,
-      transId: transactionId,
+      reference: referenceId,
+      transId,
       provider: apiResponse.provider || formData.paymentMethodId.toUpperCase(),
       accountNumber: formData.phone,
       amount: formData.totalAmount.toString(),
       status,
       currency: 'TZS',
-      message: errorMessage ?? apiResponse.message ?? 'Payment submitted successfully.',
-      transactionMessage: apiResponse.message || apiResponse.note || '',
-      nextSteps: apiResponse.nextSteps || [],
-      importantNote: apiResponse.importantNote || '',
+      message: errorMessage ?? apiResponse.message ?? undefined,
       rawResponse: apiResponse,
-      metadata: JSON.stringify({
-        submittedAt: new Date().toISOString(),
-        paymentMethod: formData.paymentMethodId,
-        purchaser: formData.fullName
-      })
-    };
-
-    await db.insert(transactions).values(dbResponse);
+      metadata: JSON.stringify({ apiResponse, submittedAt: new Date().toISOString(), paymentMethod: formData.paymentMethodId })
+    });
 
     const paymentResult: PaymentResult = {
       success: status === 'PENDING',
       method: formData.paymentMethodId,
-      provider: dbResponse.provider,
-      transactionId,
+      provider: apiResponse.provider || formData.paymentMethodId.toUpperCase(),
+      transactionId: transId,
       externalId: finalExternalId,
-      data: apiResponse.azampay_data || apiResponse.data || {},
+      data: apiResponse.azampay_data || apiResponse.data,
       status,
-      message: dbResponse.message,
+      message: apiResponse.message ?? (status === 'PENDING' ? 'Payment submitted successfully.' : 'Payment failed.'),
       apiResponse
     };
 
@@ -439,6 +432,7 @@ async function submitPayment(
       details: { status, requiresPin: status === 'PENDING', errorMessage }
     });
 
+    // Update ticket if failed
     if (status === 'FAILED') {
       await db.update(tickets)
         .set({ paymentStatus: 'FAILED', status: 'FAILED', updatedAt: new Date() })
@@ -451,7 +445,6 @@ async function submitPayment(
       validationResults,
       requiresPinConfirmation: status === 'PENDING'
     };
-
   } catch (paymentError: any) {
     logger.critical('Error contacting external payment API', paymentError);
 
