@@ -6,10 +6,11 @@ export const authConfig = {
     error: '/admin/login',
   },
   session: {
-    strategy: 'jwt',
+    strategy: "jwt",
     maxAge: 30 * 24 * 60 * 60, // 30 days
   },
   callbacks: {
+    // 1. Middleware Logic: Who can access what?
     authorized({ auth, request: { nextUrl } }) {
       const isLoggedIn = !!auth?.user;
       const isOnAdmin = nextUrl.pathname.startsWith('/admin');
@@ -17,13 +18,17 @@ export const authConfig = {
 
       if (isOnAdmin) {
         if (isOnLogin) {
-          if (isLoggedIn) return Response.redirect(new URL('/admin/dashboard', nextUrl));
-          return true;
+            // If logged in and trying to login, go to dashboard
+            if (isLoggedIn) return Response.redirect(new URL('/admin/dashboard', nextUrl));
+            return true; 
         }
+        // Admin pages require login
         return isLoggedIn;
       }
       return true;
     },
+
+    // 2. Add Role and ID to Token
     jwt({ token, user }) {
       if (user) {
         token.role = user.role;
@@ -31,6 +36,8 @@ export const authConfig = {
       }
       return token;
     },
+
+    // 3. Expose Role and ID to Session
     session({ session, token }) {
       if (session.user && token.sub) {
         session.user.id = token.sub;
@@ -39,8 +46,5 @@ export const authConfig = {
       return session;
     },
   },
-  providers: [],
-
-  // ⚠️ Allow any host for now (development/testing)
-  trustHost: true,
+  providers: [], // Keep empty here!
 } satisfies NextAuthConfig;
