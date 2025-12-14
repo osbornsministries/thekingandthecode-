@@ -4,8 +4,6 @@ import { tickets, transactions } from '@/lib/drizzle/schema';
 import { eq } from 'drizzle-orm';
 import { SMSService } from '@/lib/services/sms';
 import { updateSessionCountsAfterPurchase } from '@/lib/utils/session-limits';
-import fs from 'fs/promises';
-import path from 'path';
 
 /* -------------------------------------------------------------------------- */
 /*                                   TYPES                                    */
@@ -26,81 +24,21 @@ interface AzamPayCallbackData {
 type NormalizedStatus = 'SUCCESS' | 'FAILED' | 'PENDING' | 'UNKNOWN';
 
 /* -------------------------------------------------------------------------- */
-/*                              LOGGER CONFIG                                 */
-/* -------------------------------------------------------------------------- */
-
-const LOGS_DIR = path.join(process.cwd(), 'logs', 'azampay');
-const LOG_TYPES = {
-  CALLBACK: 'callback',
-  ERROR: 'error',
-  SUCCESS: 'success'
-} as const;
-
-type LogType = typeof LOG_TYPES[keyof typeof LOG_TYPES];
-
-/* -------------------------------------------------------------------------- */
 /*                                  LOGGER                                    */
 /* -------------------------------------------------------------------------- */
 
-async function ensureLogsDirectory() {
-  try {
-    await fs.mkdir(LOGS_DIR, { recursive: true });
-  } catch (error) {
-    console.error('Failed to create logs directory:', error);
-  }
-}
-
-async function writeToLogFile(type: LogType, message: string, payload?: any) {
-  try {
-    await ensureLogsDirectory();
-    
-    const timestamp = new Date().toISOString();
-    const logEntry = {
-      timestamp,
-      type,
-      message,
-      payload: payload || null
-    };
-    
-    const logString = JSON.stringify(logEntry, null, 2) + ',\n';
-    const logFile = path.join(LOGS_DIR, `${type}.log`);
-    
-    await fs.appendFile(logFile, logString);
-    
-    // Also log to console for immediate visibility
-    console.log(`[AzamPay][${type.toUpperCase()}] ${message}`, payload || '');
-  } catch (error) {
-    console.error(`Failed to write to ${type} log:`, error);
-  }
-}
-
 function log(area: string, message: string, payload?: any) {
-  const fullMessage = `[${area}] ${message}`;
-  console.log(`[AzamPay]${fullMessage}`, payload ? JSON.stringify(payload, null, 2) : '');
-  writeToLogFile(LOG_TYPES.CALLBACK, fullMessage, payload);
+  console.log(
+    `[AzamPay][${area}] ${message}`,
+    payload ? JSON.stringify(payload, null, 2) : ''
+  );
 }
 
 function logError(area: string, message: string, error?: any) {
-  const fullMessage = `[${area}][ERROR] ${message}`;
-  console.error(`[AzamPay]${fullMessage}`, error instanceof Error ? error.message : error);
-  
-  const errorPayload = {
-    area,
-    message,
-    error: error instanceof Error ? {
-      name: error.name,
-      message: error.message,
-      stack: error.stack
-    } : error
-  };
-  
-  writeToLogFile(LOG_TYPES.ERROR, fullMessage, errorPayload);
-}
-
-function logSuccess(area: string, message: string, payload?: any) {
-  const fullMessage = `[${area}][SUCCESS] ${message}`;
-  console.log(`[AzamPay]${fullMessage}`, payload ? JSON.stringify(payload, null, 2) : '');
-  writeToLogFile(LOG_TYPES.SUCCESS, fullMessage, payload);
+  console.error(
+    `[AzamPay][${area}][ERROR] ${message}`,
+    error instanceof Error ? error.message : error
+  );
 }
 
 /* -------------------------------------------------------------------------- */
@@ -265,16 +203,13 @@ async function handleSuccess(
   transaction: any,
   cb: ReturnType<typeof normalizeCallback>
 ) {
-  log('SUCCESS_HANDLER', 'Start success handler', transaction.id);
+  log('SUCCESS', 'Start success handler', transaction.id);
 
   try {
     await db.update(transactions)
       .set({ status: 'success' })
       .where(eq(transactions.id, transaction.id));
-    logSuccess('SUCCESS_DB', 'Transaction marked as success', {
-      transactionId: transaction.id,
-      reference: cb.reference
-    });
+    log('SUCCESS_DB', 'Transaction marked as success', transaction.id);
   } catch (err) {
     logError('SUCCESS_DB', 'Failed updating transaction', err);
   }
@@ -288,10 +223,7 @@ async function handleSuccess(
     await db.update(tickets)
       .set({ paymentStatus: 'PAID', status: 'CONFIRMED' })
       .where(eq(tickets.id, transaction.ticketId));
-    logSuccess('SUCCESS_TICKET', 'Ticket confirmed', {
-      ticketId: transaction.ticketId,
-      transactionId: transaction.id
-    });
+    log('SUCCESS_TICKET', 'Ticket confirmed', transaction.ticketId);
   } catch (err) {
     logError('SUCCESS_TICKET', 'Ticket update failed', err);
   }
@@ -311,11 +243,7 @@ async function handleSuccess(
       ticket.purchaserPhone,
       `Hello ${ticket.purchaserName}, payment received. Ref: ${cb.transId}`
     );
-    logSuccess('SUCCESS_SMS', 'SMS sent', {
-      ticketId: ticket.id,
-      phone: ticket.purchaserPhone,
-      smsResult: sms
-    });
+    log('SUCCESS_SMS', 'SMS sent', sms);
   } catch (err) {
     logError('SUCCESS_SMS', 'SMS failed', err);
   }
@@ -327,10 +255,7 @@ async function handleSuccess(
       ticket.ticketType === 'STUDENT' ? ticket.totalQuantity : 0,
       ticket.ticketType === 'CHILD' ? ticket.totalQuantity : 0
     );
-    logSuccess('SUCCESS_LIMITS', 'Session limits updated', {
-      sessionId: ticket.sessionId,
-      ticketId: ticket.id
-    });
+    log('SUCCESS_LIMITS', 'Session limits updated', ticket.sessionId);
   } catch (err) {
     logError('SUCCESS_LIMITS', 'Session limit update failed', err);
   }
@@ -340,57 +265,41 @@ async function handleFailure(
   transaction: any,
   cb: ReturnType<typeof normalizeCallback>
 ) {
-  log('FAILURE_HANDLER', 'Start failure handler', transaction.id);
+  log('FAILURE', 'Start failure handler', transaction.id);
 
-  try {
-    await db.update(transactions)
-      .set({ status: 'failed' })
-      .where(eq(transactions.id, transaction.id));
-    log('FAILURE_DB', 'Transaction marked as failed', transaction.id);
-  } catch (err) {
-    logError('FAILURE_DB', 'Failed updating transaction status', err);
-  }
+  await db.update(transactions)
+    .set({ status: 'failed' })
+    .where(eq(transactions.id, transaction.id));
 
   if (!transaction.ticketId) {
     log('FAILURE_SKIP', 'No ticket linked', transaction.id);
     return;
   }
 
-  try {
-    await db.update(tickets)
-      .set({ paymentStatus: 'FAILED', status: 'CANCELLED' })
-      .where(eq(tickets.id, transaction.ticketId));
-    log('FAILURE_TICKET', 'Ticket cancelled', transaction.ticketId);
-  } catch (err) {
-    logError('FAILURE_TICKET', 'Ticket update failed', err);
-  }
+  await db.update(tickets)
+    .set({ paymentStatus: 'FAILED', status: 'CANCELLED' })
+    .where(eq(tickets.id, transaction.ticketId));
 
-  try {
-    const ticket = await db.query.tickets.findFirst({
-      where: eq(tickets.id, transaction.ticketId),
-    });
+  const ticket = await db.query.tickets.findFirst({
+    where: eq(tickets.id, transaction.ticketId),
+  });
 
-    if (ticket) {
+  if (ticket) {
+    try {
       await SMSService.sendSMS(
         ticket.purchaserPhone,
         `Payment failed. Reason: ${cb.message || 'Unknown error'}`
       );
       log('FAILURE_SMS', 'Failure SMS sent', ticket.id);
+    } catch (err) {
+      logError('FAILURE_SMS', 'Failure SMS failed', err);
     }
-  } catch (err) {
-    logError('FAILURE_SMS', 'Failure SMS failed', err);
   }
 }
 
 async function handlePending(transaction: any) {
-  log('PENDING_HANDLER', 'Marking transaction pending', transaction.id);
-  
-  try {
-    await db.update(transactions)
-      .set({ status: 'pending' })
-      .where(eq(transactions.id, transaction.id));
-    log('PENDING_DB', 'Transaction marked as pending', transaction.id);
-  } catch (err) {
-    logError('PENDING_DB', 'Failed updating pending transaction', err);
-  }
+  log('PENDING', 'Marking transaction pending', transaction.id);
+  await db.update(transactions)
+    .set({ status: 'pending' })
+    .where(eq(transactions.id, transaction.id));
 }

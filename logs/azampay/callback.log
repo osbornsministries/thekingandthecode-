@@ -1,0 +1,95 @@
+{
+  "timestamp": "2025-12-14T08:08:58.296Z",
+  "type": "callback",
+  "message": "[HIT] Callback endpoint hit",
+  "payload": {
+    "method": "POST",
+    "url": "http://localhost:3000/api/azampay/callback/",
+    "ip": "::1",
+    "userAgent": "PostmanRuntime/7.49.1",
+    "time": "2025-12-14T08:08:58.257Z"
+  }
+},
+{
+  "timestamp": "2025-12-14T08:08:58.309Z",
+  "type": "callback",
+  "message": "[RAW_PAYLOAD] Received raw payload",
+  "payload": {
+    "msisdn": "***masked***",
+    "amount": "600000",
+    "message": "Failed",
+    "utilityref": "f222f955-2de4-c46a-a69f-a68ebc58587b",
+    "reference": "019a71bae80571a2a5d469a435e1e30d",
+    "externalreference": "019a71bae80571a2a5d469a435e1e30d",
+    "transid": "019a71bae80571a2a5d469a435e1e30d",
+    "operator": "Mpesa",
+    "transactionstatus": "success",
+    "submerchantAcc": null,
+    "additionalProperties": {
+      "property1": "878346737777",
+      "property2": "878346737777"
+    }
+  }
+},
+{
+  "timestamp": "2025-12-14T08:08:58.310Z",
+  "type": "callback",
+  "message": "[NORMALIZED] Normalized callback data",
+  "payload": {
+    "raw": {
+      "msisdn": "255794809887",
+      "amount": "600000",
+      "message": "Failed",
+      "utilityref": "f222f955-2de4-c46a-a69f-a68ebc58587b",
+      "reference": "019a71bae80571a2a5d469a435e1e30d",
+      "externalreference": "019a71bae80571a2a5d469a435e1e30d",
+      "transid": "019a71bae80571a2a5d469a435e1e30d",
+      "operator": "Mpesa",
+      "transactionstatus": "success",
+      "submerchantAcc": null,
+      "additionalProperties": {
+        "property1": "878346737777",
+        "property2": "878346737777"
+      }
+    },
+    "reference": "f222f955-2de4-c46a-a69f-a68ebc58587b",
+    "transId": "019a71bae80571a2a5d469a435e1e30d",
+    "phone": "255794809887",
+    "amount": 600000,
+    "operator": "Mpesa",
+    "message": "Failed",
+    "status": "SUCCESS"
+  }
+},
+{
+  "timestamp": "2025-12-14T08:08:58.310Z",
+  "type": "callback",
+  "message": "[DB_UPDATE] Updating existing transaction",
+  "payload": {
+    "id": 11,
+    "status": "SUCCESS"
+  }
+},
+{
+  "timestamp": "2025-12-14T08:08:58.347Z",
+  "type": "callback",
+  "message": "[STATUS_SUCCESS] Processing success case",
+  "payload": "f222f955-2de4-c46a-a69f-a68ebc58587b"
+},
+{
+  "timestamp": "2025-12-14T08:08:58.348Z",
+  "type": "callback",
+  "message": "[SUCCESS_HANDLER] Start success handler",
+  "payload": 11
+},
+{
+  "timestamp": "2025-12-14T08:09:00.820Z",
+  "type": "callback",
+  "message": "[RESPONSE] Response sent to AzamPay",
+  "payload": {
+    "success": true,
+    "status": "SUCCESS",
+    "reference": "f222f955-2de4-c46a-a69f-a68ebc58587b",
+    "message": "Callback processed"
+  }
+},

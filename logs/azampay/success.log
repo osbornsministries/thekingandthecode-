@@ -1,0 +1,52 @@
+{
+  "timestamp": "2025-12-14T08:08:58.352Z",
+  "type": "success",
+  "message": "[SUCCESS_DB][SUCCESS] Transaction marked as success",
+  "payload": {
+    "transactionId": 11,
+    "reference": "f222f955-2de4-c46a-a69f-a68ebc58587b"
+  }
+},
+{
+  "timestamp": "2025-12-14T08:08:58.412Z",
+  "type": "success",
+  "message": "[SUCCESS_TICKET][SUCCESS] Ticket confirmed",
+  "payload": {
+    "ticketId": 11,
+    "transactionId": 11
+  }
+},
+{
+  "timestamp": "2025-12-14T08:09:00.786Z",
+  "type": "success",
+  "message": "[SUCCESS_SMS][SUCCESS] SMS sent",
+  "payload": {
+    "ticketId": 11,
+    "phone": "0794809887",
+    "smsResult": {
+      "success": true,
+      "data": {
+        "success": true,
+        "status": "SENT",
+        "message": "Instant message queued for 1 recipients",
+        "job_id": "35d6d443e351498989fc2d286641a5f3",
+        "message_persistence": "instant-1765699740.048025",
+        "stats": {
+          "recipients": 1,
+          "sms_parts": 1,
+          "total_sms": 1,
+          "cost": 1
+        }
+      }
+    }
+  }
+},
+{
+  "timestamp": "2025-12-14T08:09:00.821Z",
+  "type": "success",
+  "message": "[SUCCESS_LIMITS][SUCCESS] Session limits updated",
+  "payload": {
+    "sessionId": 1,
+    "ticketId": 11
+  }
+},
