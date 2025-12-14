@@ -1,5 +1,7 @@
 import React from 'react';
-
+import { MessageCircle } from 'lucide-react';
+import { Phone } from 'lucide-react';
+import { Instagram } from 'lucide-react';
 const AboutSection = () => {
   return (
     // Change 1: Removed py-12 to allow it to fill space, added h-full
@@ -51,6 +53,42 @@ const AboutSection = () => {
             </p>
 
           </div>
+          {/* --- 4. Contact & Social Buttons --- */}
+<div className="relative z-10 mt-8 flex flex-wrap items-center gap-4">
+
+  {/* Phone */}
+  <a
+    href="tel:+255700000000"
+    className="flex items-center gap-2 rounded-full border border-gray-300 bg-white px-5 py-3 text-lg font-semibold text-gray-900 shadow-sm transition hover:bg-gray-100"
+  >
+    <Phone className="h-5 w-5 text-red-700" />
+    <span>+255 659 687 569</span>
+  </a>
+
+  {/* WhatsApp */}
+  <a
+    href="https://wa.me/255659687569?text=Hello%20I%20need%20more%20info"
+    target="_blank"
+    rel="noopener noreferrer"
+    className="flex items-center gap-2 rounded-full bg-green-500 px-5 py-3 text-lg font-semibold text-white shadow-md transition hover:bg-green-600"
+  >
+    <MessageCircle className="h-5 w-5" />
+    <span>WhatsApp</span>
+  </a>
+
+  {/* Instagram */}
+  <a
+    href="https://www.instagram.com/thekingandthecode/"
+    target="_blank"
+    rel="noopener noreferrer"
+    className="flex items-center gap-2 rounded-full bg-gradient-to-r from-pink-500 to-purple-600 px-5 py-3 text-lg font-semibold text-white shadow-md transition hover:opacity-90"
+  >
+    <Instagram className="h-5 w-5" />
+    <span>Instagram</span>
+  </a>
+
+</div>
+
 
           {/* --- 3. Bottom Right Decorations (Star & Dots) --- */}
           <div className="absolute bottom-6 right-6 z-20 pointer-events-none">

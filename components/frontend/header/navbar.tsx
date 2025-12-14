@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState, useEffect } from 'react';
 import Image from 'next/image';
+import FloatingWhatsApp from './FloatingWhatsApp';
 
 const navLinks = [
   // { name: 'Home', href: '/' },
@@ -73,6 +74,7 @@ export default function Navbar() {
           );
         })}
       </div>
+      <FloatingWhatsApp/>
     </nav>
   );
 }
