@@ -218,11 +218,11 @@ export default function StepDetails({
         )}
 
         {/* General Notice */}
-        <div className="p-3 bg-green-50 border border-green-100 rounded-xl">
+        {/* <div className="p-3 bg-green-50 border border-green-100 rounded-xl">
           <p className="text-sm text-green-700">
             ✅ Your ticket will be sent via SMS after payment confirmation
           </p>
-        </div>
+        </div> */}
       </div>
     </div>
   );

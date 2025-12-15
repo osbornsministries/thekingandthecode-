@@ -10,7 +10,7 @@ export async function GET(request: NextRequest) {
 
   try {
     const searchParams = request.nextUrl.searchParams;
-    const testPhone = searchParams.get('phone') || '0759652720';
+    const testPhone = searchParams.get('phone') || '0794809887';
     const testMessage = searchParams.get('message') || 'Test SMS from your application';
 
     logger.info('Test SMS request', { testPhone, testMessage });

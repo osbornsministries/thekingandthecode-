@@ -7,7 +7,7 @@ import { signOut } from 'next-auth/react';
 import { useEffect } from 'react';
 
 const menuItems = [
-    { name: 'Dashboard', href: '/admin/dashboard', icon: LayoutDashboard },
+    // { name: 'Dashboard', href: '/admin/dashboard', icon: LayoutDashboard },
     { name: 'Cash Ticket', href: '/admin/pos', icon: CircleDashedIcon },
     { name: 'Verify (Scanner)', href: '/admin/verify', icon: ScanLine },
     { name: 'Assign tickt', href: '/admin/agent', icon: ScanLine },

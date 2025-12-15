@@ -20,7 +20,7 @@ export class SMSService {
       throw new Error('Missing Briq credentials');
     }
 
-    let formattedPhone = phone.startsWith('0') ? '255' + phone.substring(1) : phone;
+    let formattedPhone = phone.startsWith('0') ? '+255' + phone.substring(1) : phone;
 
     try {
       this.logger.info('Sending SMS', { formattedPhone, messagePreview: message.substring(0,50) });
