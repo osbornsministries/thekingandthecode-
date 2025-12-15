@@ -1,6 +1,6 @@
 // lib/services/sms.ts
-const BRIQ_API_KEY = "Q19lbjziQvWJ3CGMuKdbePqHvTV3EvBzd2y8T-6dXjE";
-const BRIQ_SENDER_ID ="BRIQ";
+const BRIQ_API_KEY = "x6Q1CHWNhvwGCQ0wfqVwM8rT_MZ7X8vzFWHk1ZDYnmQ";
+const BRIQ_SENDER_ID ="KingAndCode";
 const BRIQ_URL = 'https://karibu.briq.tz/v1/message/send-instant';
 
 import { Logger } from '@/lib/logger/logger';
