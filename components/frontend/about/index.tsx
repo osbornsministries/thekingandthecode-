@@ -43,7 +43,7 @@ const AboutSection = () => {
             </p>
 
             <p className="text-xl md:text-2xl 2xl:text-3xl 3xl:text-4xl text-gray-900 font-sans leading-relaxed">
-          The set for The King & The Code: Christmas Edition 2025 offers more than just theatre. Come spend the day with your family at a Christmas Wonderland. There's something here for the entire family.
+          The set for The King & The Code: Christmas Edition 2025 offers more than just theatre. Come spend the day with your family at a Christmas Wonderland. There is something here for your entire family
             </p>
 
             
