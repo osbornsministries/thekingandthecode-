@@ -1,34 +1,28 @@
 // app/admin/tickets/create/page.tsx
-'use client';
+import CreateTicketForm from '@/components/admin/tickets/CreateTicketForm';
+import { db } from '@/lib/db/db';
+import { eventSessions, eventDays } from '@/lib/drizzle/schema';
+import { eq } from 'drizzle-orm';
 
-import AdminLayout from '@/components/admin/AdminLayout';
-import TicketForm from '@/components/frontend/tickets/TicketForm';
-import { ArrowLeft } from 'lucide-react';
-import Link from 'next/link';
+export default async function CreateTicketPage() {
+  // Fetch all sessions for the dropdown
+  const sessions = await db
+    .select({
+      id: eventSessions.id,
+      name: eventSessions.name,
+      dayName: eventDays.name,
+      date: eventDays.date,
+      startTime: eventSessions.startTime,
+      endTime: eventSessions.endTime,
+    })
+    .from(eventSessions)
+    .leftJoin(eventDays, eq(eventSessions.dayId, eventDays.id))
+    .orderBy(eventDays.date, eventSessions.startTime);
 
-export default function CreateTicketPage() {
-  return (
-    <AdminLayout>
-      <div className="space-y-6">
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-          <div className="flex items-center gap-3">
-            <Link
-              href="/admin/tickets"
-              className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-            >
-              <ArrowLeft size={20} />
-            </Link>
-            <div>
-              <h1 className="text-2xl font-bold text-gray-900">Create New Ticket</h1>
-              <p className="text-sm text-gray-500">Add a new ticket to the system</p>
-            </div>
-          </div>
-        </div>
+  const formattedSessions = sessions.map(session => ({
+    ...session,
+    date: session.date ? session.date.toISOString() : null,
+  }));
 
-        {/* Form */}
-        <TicketForm mode="create" />
-      </div>
-    </AdminLayout>
-  );
+  return <CreateTicketForm sessions={formattedSessions} />;
 }

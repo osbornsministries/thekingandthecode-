@@ -1,112 +1,113 @@
 // app/admin/tickets/[id]/edit/page.tsx
-'use client';
+import { notFound } from 'next/navigation';
+import EditTicketForm from '@/components/admin/tickets/EditTicketForm';
+import { db } from '@/lib/db/db';
+import { tickets, eventSessions, eventDays, transactions } from '@/lib/drizzle/schema';
+import { eq } from 'drizzle-orm';
 
-import AdminLayout from '@/components/admin/AdminLayout';
-import TicketForm from '@/components/frontend/tickets/TicketForm';
-import { ArrowLeft, Loader2 } from 'lucide-react';
-import Link from 'next/link';
-import { useParams } from 'next/navigation';
-import { useState, useEffect } from 'react';
-import { getTicketById } from '@/lib/actions/ticket/tickets';
+export default async function EditTicketPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = await params;
+  const ticketId = parseInt(id);
 
-export default function EditTicketPage() {
-  const params = useParams();
-  const [loading, setLoading] = useState(true);
-  const [ticketExists, setTicketExists] = useState(true);
-  
-  const ticketId = params.id ? parseInt(params.id as string) : null;
+  if (isNaN(ticketId)) {
+    notFound();
+  }
 
-  useEffect(() => {
-    const checkTicket = async () => {
-      if (!ticketId) {
-        setTicketExists(false);
-        setLoading(false);
-        return;
-      }
+  try {
+    // Fetch ticket with related data
+    const [ticketData] = await db
+      .select({
+        ticket: tickets,
+        session: eventSessions,
+        day: eventDays,
+      })
+      .from(tickets)
+      .leftJoin(eventSessions, eq(tickets.sessionId, eventSessions.id))
+      .leftJoin(eventDays, eq(eventSessions.dayId, eventDays.id))
+      .where(eq(tickets.id, ticketId));
 
-      try {
-        const ticket = await getTicketById(ticketId);
-        if (!ticket) {
-          setTicketExists(false);
-        }
-      } catch (error) {
-        console.error('Error checking ticket:', error);
-        setTicketExists(false);
-      } finally {
-        setLoading(false);
-      }
+    if (!ticketData) {
+      notFound();
+    }
+
+    // Fetch transaction data
+    const [transactionData] = await db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.ticketId, ticketId));
+
+    // Fetch all sessions for the dropdown
+    const allSessions = await db
+      .select({
+        id: eventSessions.id,
+        name: eventSessions.name,
+        dayName: eventDays.name,
+        date: eventDays.date,
+        startTime: eventSessions.startTime,
+        endTime: eventSessions.endTime,
+      })
+      .from(eventSessions)
+      .leftJoin(eventDays, eq(eventSessions.dayId, eventDays.id))
+      .orderBy(eventDays.date, eventSessions.startTime);
+
+    // Prepare data for client component
+    const formattedTicket = {
+      id: ticketData.ticket.id,
+      sessionId: ticketData.ticket.sessionId?.toString() || '',
+      purchaserName: ticketData.ticket.purchaserName || '',
+      purchaserPhone: ticketData.ticket.purchaserPhone || '',
+      ticketType: ticketData.ticket.ticketType || 'REGULAR',
+      totalAmount: ticketData.ticket.totalAmount?.toString() || '0',
+      paymentStatus: ticketData.ticket.paymentStatus || 'UNPAID',
+      adultQuantity: ticketData.ticket.adultQuantity || 0,
+      studentQuantity: ticketData.ticket.studentQuantity || 0,
+      childQuantity: ticketData.ticket.childQuantity || 0,
+      studentId: ticketData.ticket.studentId || '',
+      institution: ticketData.ticket.institution || '',
+      ticketCode: ticketData.ticket.ticketCode || '',
     };
 
-    checkTicket();
-  }, [ticketId]);
+    const formattedTransaction = transactionData ? {
+      id: transactionData.id,
+      externalId: transactionData.externalId || '',
+      reference: transactionData.reference || '',
+      transId: transactionData.transId || '',
+      provider: transactionData.provider || '',
+      accountNumber: transactionData.accountNumber || '',
+      amount: transactionData.amount?.toString() || '',
+      currency: transactionData.currency || 'TZS',
+      status: transactionData.status || 'PENDING',
+      message: transactionData.message || '',
+    } : null;
 
-  if (loading) {
+    const formattedSession = ticketData.session ? {
+      id: ticketData.session.id,
+      name: ticketData.session.name,
+      startTime: ticketData.session.startTime,
+      endTime: ticketData.session.endTime,
+      dayName: ticketData.day?.name || '',
+      dayDate: ticketData.day?.date || null,
+    } : null;
+
+    const formattedSessions = allSessions.map(session => ({
+      ...session,
+      date: session.date ? session.date.toISOString() : null,
+    }));
+
     return (
-      <AdminLayout>
-        <div className="flex items-center justify-center min-h-[400px]">
-          <Loader2 className="w-8 h-8 animate-spin text-[#A81010]" />
-        </div>
-      </AdminLayout>
+      <EditTicketForm 
+        initialData={formattedTicket}
+        transaction={formattedTransaction}
+        currentSession={formattedSession}
+        sessions={formattedSessions} 
+      />
     );
+  } catch (error) {
+    console.error('Error fetching ticket:', error);
+    notFound();
   }
-
-  if (!ticketExists || !ticketId) {
-    return (
-      <AdminLayout>
-        <div className="space-y-6">
-          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-            <div className="flex items-center gap-3">
-              <Link
-                href="/admin/tickets"
-                className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-              >
-                <ArrowLeft size={20} />
-              </Link>
-              <div>
-                <h1 className="text-2xl font-bold text-gray-900">Edit Ticket</h1>
-              </div>
-            </div>
-          </div>
-          <div className="text-center py-12 bg-white rounded-2xl border border-gray-200">
-            <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-4">
-              <span className="text-2xl">⚠️</span>
-            </div>
-            <h3 className="text-lg font-bold text-gray-900 mb-2">Ticket Not Found</h3>
-            <p className="text-gray-500 mb-6">The ticket you're trying to edit doesn't exist.</p>
-            <Link
-              href="/admin/tickets"
-              className="inline-flex items-center gap-2 px-6 py-3 bg-[#A81010] text-white rounded-lg font-medium hover:bg-[#8a0d0d] transition-colors"
-            >
-              <ArrowLeft size={16} /> Back to Tickets
-            </Link>
-          </div>
-        </div>
-      </AdminLayout>
-    );
-  }
-
-  return (
-    <AdminLayout>
-      <div className="space-y-6">
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-          <div className="flex items-center gap-3">
-            <Link
-              href="/admin/tickets"
-              className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-            >
-              <ArrowLeft size={20} />
-            </Link>
-            <div>
-              <h1 className="text-2xl font-bold text-gray-900">Edit Ticket</h1>
-              <p className="text-sm text-gray-500">Update ticket information</p>
-            </div>
-          </div>
-        </div>
-
-        {/* Form */}
-        <TicketForm mode="edit" ticketId={ticketId} />
-      </div>
-    </AdminLayout>
-  );
 }

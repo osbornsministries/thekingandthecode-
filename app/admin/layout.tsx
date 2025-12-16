@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { auth } from "@/auth"; // Import the server-side auth function
 import AuthProvider from "@/components/providers/AuthProvider"; // Import your new component
 import "../globals.css";
+import { ToastProvider } from "@/components/providers/ToastProvider";
 
 export const metadata: Metadata = {
   title: "King & Code",
@@ -20,7 +21,9 @@ export default async function RootLayout({
     <>
         {/* 2. Pass session to the provider */}
         <AuthProvider session={session}>
-          {children}
+           <ToastProvider>
+             {children}
+          </ToastProvider>
         </AuthProvider>
     </>
   );

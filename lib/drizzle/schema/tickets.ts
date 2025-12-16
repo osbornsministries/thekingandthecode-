@@ -30,12 +30,7 @@ export const tickets = mysqlTable('tickets', {
   childQuantity: int('child_quantity').notNull().default(0),
   totalQuantity: int('total_quantity').notNull().default(1),
   
-  // totalAmount: decimal('total_amount', { precision: 10, scale: 2 }).notNull(),
-  // paymentStatus: varchar('payment_status', { length: 20 }).default('UNPAID'), 
-  // paymentMethodId: varchar('payment_method_id', { length: 50 }),
-  
-  // status: varchar('status', { length: 20 }).default('PENDING'),
-
+ 
   // ADD STUDENT INFO (optional)
   studentId: varchar('student_id', { length: 50 }),
   institution: varchar('institution', { length: 100 }),

@@ -12,6 +12,7 @@ export * from './student';
 export * from './children';
 export * from './triggers/ticket-tracking'; 
 export * from './session-limits';
-// import * from  './sms'
+export * from './ticketAssignments';
+export * from  './sms'
 
 

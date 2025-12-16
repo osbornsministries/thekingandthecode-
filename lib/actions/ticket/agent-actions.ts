@@ -1,13 +1,12 @@
-// lib/actions/agent-actions.ts
+// lib/actions/ticket/agent-actions.ts
 'use server';
 
 import { db } from '@/lib/db/db';
 import { 
-  tickets, adults, students, children, 
-  eventDays, eventSessions, agentAssignments 
+  tickets, ticketAssignments, adults, students, children,
+  eventSessions, eventDays, transactions, ticketPrices
 } from '@/lib/drizzle/schema';
-import { eq, and, or, desc, isNull, not } from 'drizzle-orm';
-import { randomInt } from 'crypto';
+import { eq, and, like, or } from 'drizzle-orm';
 
 // ----------------------------------------------------------------------
 // TYPES
@@ -20,17 +19,17 @@ export interface TicketScanResult {
   originalPhone: string;
   status: string;
   paymentStatus: string;
+  totalAmount: number;
   isValid: boolean;
-  isAssigned: boolean;
-  assignedTo?: string;
-  assignedPhone?: string;
+  canBeAssigned: boolean;
   eventInfo?: {
     dayName: string;
     sessionName: string;
     sessionTime: string;
+    date: Date;
   };
-  price: number;
-  createdAt: Date;
+  attendeeInfo?: any;
+  error?: string;
 }
 
 export interface AttendeeSearchResult {
@@ -38,11 +37,11 @@ export interface AttendeeSearchResult {
   name: string;
   phone: string;
   email?: string;
-  type: 'ADULT' | 'STUDENT' | 'CHILD';
   studentId?: string;
   institution?: string;
+  type: 'ADULT' | 'STUDENT' | 'CHILD' | 'GENERAL';
   hasActiveTicket: boolean;
-  ticketId?: number;
+  existingTicketCode?: string;
 }
 
 export interface AssignmentData {
@@ -50,123 +49,183 @@ export interface AssignmentData {
   assigneeName: string;
   assigneePhone: string;
   assigneeEmail?: string;
+  assigneeType?: 'ADULT' | 'STUDENT' | 'CHILD';
   agentId: string;
   requireOtp?: boolean;
+  otpCode?: string;
+  otpExpiry?: Date;
+  notes?: string;
+}
+
+export interface AssignmentResult {
+  success: boolean;
+  message: string;
+  assignmentId?: number;
+  data?: any;
+  error?: string;
 }
 
 // ----------------------------------------------------------------------
-// TICKET SCANNING & VALIDATION
+// TICKET SCANNING FOR ASSIGNMENT
 // ----------------------------------------------------------------------
-export async function scanTicketForAssignment(ticketCode: string): Promise<{
+export async function scanTicketForAssignment(rawCode: string): Promise<{
   success: boolean;
   data?: TicketScanResult;
   error?: string;
 }> {
   try {
-    // Find ticket
+    // Sanitize the code
+    const code = rawCode.includes('/') 
+      ? rawCode.split('/').pop()?.trim() 
+      : rawCode.trim();
+    
+    if (!code || code.length < 8) {
+      return {
+        success: false,
+        error: 'Invalid ticket code format'
+      };
+    }
+    
+    // Lookup ticket
     const ticket = await db.select()
       .from(tickets)
-      .where(eq(tickets.ticketCode, ticketCode))
+      .where(eq(tickets.ticketCode, code))
       .then(rows => rows[0]);
-
+    
     if (!ticket) {
-      return { 
-        success: false, 
-        error: 'Ticket not found' 
+      return {
+        success: false,
+        error: 'Ticket not found'
       };
     }
-
-    // Check if ticket is already assigned
+    
+    // Check if ticket can be assigned
+    const canBeAssigned = (
+      ticket.status === 'ACTIVE' && 
+      ticket.paymentStatus === 'PAID' &&
+      !ticket.isAssigned // You might want to add this field
+    );
+    
+    if (!canBeAssigned) {
+      return {
+        success: false,
+        error: `Ticket cannot be assigned. Status: ${ticket.status}, Payment: ${ticket.paymentStatus}`
+      };
+    }
+    
+    // Check for existing assignment
     const existingAssignment = await db.select()
-      .from(agentAssignments)
-      .where(and(
-        eq(agentAssignments.ticketId, ticket.id),
-        eq(agentAssignments.status, 'COMPLETED')
-      ))
+      .from(ticketAssignments)
+      .where(
+        and(
+          eq(ticketAssignments.ticketId, ticket.id),
+          eq(ticketAssignments.status, 'ACTIVE')
+        )
+      )
       .then(rows => rows[0]);
-
+    
     if (existingAssignment) {
-      return { 
-        success: false, 
-        error: 'Ticket already assigned' 
+      return {
+        success: false,
+        error: `Ticket already assigned to: ${existingAssignment.assignedTo}`
       };
     }
-
-    // Get event info
+    
+    // Get event information
     const session = await db.select()
       .from(eventSessions)
       .where(eq(eventSessions.id, ticket.sessionId))
       .then(rows => rows[0]);
-
+    
     const day = session ? await db.select()
       .from(eventDays)
       .where(eq(eventDays.id, session.dayId))
       .then(rows => rows[0]) : null;
-
-    // Get original attendee info
-    let originalOwner = 'Walk-in POS';
-    let originalPhone = 'N/A';
-
+    
+    // Get attendee information
+    let attendeeInfo = null;
     if (ticket.ticketType === 'ADULT') {
-      const adult = await db.select()
+      const adultAttendees = await db.select()
         .from(adults)
         .where(eq(adults.ticketId, ticket.id))
-        .then(rows => rows[0]);
-      if (adult) {
-        originalOwner = adult.fullName;
-        originalPhone = adult.phoneNumber;
+        .then(rows => rows);
+      if (adultAttendees.length > 0) {
+        attendeeInfo = {
+          type: 'ADULT',
+          attendees: adultAttendees.map(a => ({
+            name: a.fullName,
+            phone: a.phoneNumber
+          }))
+        };
       }
     } else if (ticket.ticketType === 'STUDENT') {
-      const student = await db.select()
+      const studentAttendees = await db.select()
         .from(students)
         .where(eq(students.ticketId, ticket.id))
-        .then(rows => rows[0]);
-      if (student) {
-        originalOwner = student.fullName;
-        originalPhone = student.phoneNumber;
+        .then(rows => rows);
+      if (studentAttendees.length > 0) {
+        attendeeInfo = {
+          type: 'STUDENT',
+          attendees: studentAttendees.map(s => ({
+            name: s.fullName,
+            phone: s.phoneNumber,
+            studentId: s.studentId,
+            institution: s.institutionName
+          }))
+        };
       }
     } else if (ticket.ticketType === 'CHILD') {
-      const child = await db.select()
+      const childAttendees = await db.select()
         .from(children)
         .where(eq(children.ticketId, ticket.id))
-        .then(rows => rows[0]);
-      if (child) {
-        originalOwner = child.fullName;
-        originalPhone = 'N/A';
+        .then(rows => rows);
+      if (childAttendees.length > 0) {
+        attendeeInfo = {
+          type: 'CHILD',
+          attendees: childAttendees.map(c => ({
+            name: c.fullName,
+            parent: c.parentName
+          }))
+        };
       }
     }
-
+    
     const result: TicketScanResult = {
       ticketId: ticket.id,
       ticketCode: ticket.ticketCode,
       ticketType: ticket.ticketType,
-      originalOwner,
-      originalPhone,
+      originalOwner: ticket.purchaserName,
+      originalPhone: ticket.purchaserPhone,
       status: ticket.status,
       paymentStatus: ticket.paymentStatus,
-      isValid: ticket.status === 'ACTIVE' && ticket.paymentStatus === 'PAID',
-      isAssigned: !!existingAssignment,
+      totalAmount: parseFloat(ticket.totalAmount),
+      isValid: true,
+      canBeAssigned: true,
       eventInfo: day && session ? {
         dayName: day.name,
         sessionName: session.name,
-        sessionTime: `${session.startTime} - ${session.endTime}`
+        sessionTime: `${session.startTime} - ${session.endTime}`,
+        date: day.date
       } : undefined,
-      price: parseFloat(ticket.totalAmount),
-      createdAt: ticket.createdAt || new Date()
+      attendeeInfo
     };
-
-    return { success: true, data: result };
+    
+    return {
+      success: true,
+      data: result
+    };
+    
   } catch (error: any) {
-    console.error('Scan error:', error);
-    return { 
-      success: false, 
-      error: 'Failed to scan ticket' 
+    console.error('Error scanning ticket:', error);
+    return {
+      success: false,
+      error: `Scan failed: ${error.message}`
     };
   }
 }
 
 // ----------------------------------------------------------------------
-// ATTENDEE SEARCH
+// SEARCH ATTENDEES
 // ----------------------------------------------------------------------
 export async function searchAttendees(searchTerm: string): Promise<{
   success: boolean;
@@ -174,7 +233,7 @@ export async function searchAttendees(searchTerm: string): Promise<{
   error?: string;
 }> {
   try {
-    const term = `%${searchTerm}%`;
+    const search = `%${searchTerm}%`;
     
     // Search in adults
     const adultResults = await db.select({
@@ -182,82 +241,121 @@ export async function searchAttendees(searchTerm: string): Promise<{
       name: adults.fullName,
       phone: adults.phoneNumber,
       type: 'ADULT' as const,
-      studentId: null,
-      institution: null
     })
     .from(adults)
-    .where(or(
-      adults.fullName.ilike(term),
-      adults.phoneNumber.ilike(term)
-    ))
+    .where(
+      or(
+        like(adults.fullName, search),
+        like(adults.phoneNumber, search)
+      )
+    )
     .limit(10);
-
+    
     // Search in students
     const studentResults = await db.select({
       id: students.id,
       name: students.fullName,
-      phone: 'N/A',
-      type: 'STUDENT' as const,
+      phone: students.phoneNumber,
       studentId: students.studentId,
-      institution: students.institutionName
+      institution: students.institutionName,
+      type: 'STUDENT' as const,
     })
     .from(students)
-    .where(or(
-      students.fullName.ilike(term),
-      students.studentId.ilike(term),
-      students.institutionName.ilike(term)
-    ))
+    .where(
+      or(
+        like(students.fullName, search),
+        like(students.phoneNumber, search),
+        like(students.studentId || '', search)
+      )
+    )
     .limit(10);
-
+    
     // Search in children
     const childResults = await db.select({
       id: children.id,
       name: children.fullName,
-      phone: 'N/A',
+      phone: children.parentName, // Parent's name as phone placeholder
       type: 'CHILD' as const,
-      studentId: null,
-      institution: null
     })
     .from(children)
-    .where(children.fullName.ilike(term))
+    .where(
+      or(
+        like(children.fullName, search),
+        like(children.parentName || '', search)
+      )
+    )
     .limit(10);
-
-    // Combine and check for active tickets
-    const allResults = [...adultResults, ...studentResults, ...childResults];
     
-    const resultsWithTicketCheck = await Promise.all(
-      allResults.map(async (result) => {
-        const attendeeTickets = await db.select()
-          .from(tickets)
-          .where(and(
-            or(
-              result.type === 'ADULT' ? eq(tickets.id, result.id) : undefined,
-              result.type === 'STUDENT' ? eq(tickets.id, result.id) : undefined,
-              result.type === 'CHILD' ? eq(tickets.id, result.id) : undefined
-            ),
-            eq(tickets.status, 'ACTIVE'),
-            eq(tickets.paymentStatus, 'PAID')
-          ))
+    // Combine results
+    const combinedResults = [
+      ...adultResults.map(r => ({
+        ...r,
+        hasActiveTicket: false, // You might want to check this
+        existingTicketCode: undefined
+      })),
+      ...studentResults.map(r => ({
+        ...r,
+        phone: r.phone || 'N/A',
+        hasActiveTicket: false,
+        existingTicketCode: undefined
+      })),
+      ...childResults.map(r => ({
+        ...r,
+        phone: 'N/A', // Children don't have phone
+        hasActiveTicket: false,
+        existingTicketCode: undefined
+      }))
+    ];
+    
+    // Check if they have active tickets
+    for (const result of combinedResults) {
+      let attendeeTicketId;
+      
+      if (result.type === 'ADULT') {
+        const adult = await db.select({ ticketId: adults.ticketId })
+          .from(adults)
+          .where(eq(adults.id, result.id))
           .then(rows => rows[0]);
-
-        return {
-          ...result,
-          hasActiveTicket: !!attendeeTickets,
-          ticketId: attendeeTickets?.id
-        };
-      })
-    );
-
+        attendeeTicketId = adult?.ticketId;
+      } else if (result.type === 'STUDENT') {
+        const student = await db.select({ ticketId: students.ticketId })
+          .from(students)
+          .where(eq(students.id, result.id))
+          .then(rows => rows[0]);
+        attendeeTicketId = student?.ticketId;
+      } else if (result.type === 'CHILD') {
+        const child = await db.select({ ticketId: children.ticketId })
+          .from(children)
+          .where(eq(children.id, result.id))
+          .then(rows => rows[0]);
+        attendeeTicketId = child?.ticketId;
+      }
+      
+      if (attendeeTicketId) {
+        const ticket = await db.select({
+          ticketCode: tickets.ticketCode,
+          status: tickets.status
+        })
+        .from(tickets)
+        .where(eq(tickets.id, attendeeTicketId))
+        .then(rows => rows[0]);
+        
+        result.hasActiveTicket = ticket?.status === 'ACTIVE';
+        result.existingTicketCode = ticket?.ticketCode;
+      }
+    }
+    
     return {
       success: true,
-      data: resultsWithTicketCheck
+      data: combinedResults.slice(0, 20) // Limit total results
     };
+    
   } catch (error: any) {
-    console.error('Search error:', error);
+    console.error('Error searching attendees:', error);
     return {
       success: false,
       data: [],
-      error: 'Search failed'
+      error: `Search failed: ${error.message}`
     };
   }
 }
@@ -268,26 +366,28 @@ export async function searchAttendees(searchTerm: string): Promise<{
 export async function generateOtp(phone: string): Promise<{
   success: boolean;
   otp?: string;
-  expiry?: Date;
   error?: string;
 }> {
   try {
     // Generate 6-digit OTP
-    const otp = randomInt(100000, 999999).toString();
-    const expiry = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
     
-    // TODO: Send OTP via SMS (integrate with your SMS service)
+    // In production, you would send this OTP via SMS
     console.log(`OTP for ${phone}: ${otp}`);
+    
+    // Store OTP in database with expiry (optional)
+    const otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
     
     return {
       success: true,
-      otp,
-      expiry
+      otp
     };
+    
   } catch (error: any) {
+    console.error('Error generating OTP:', error);
     return {
       success: false,
-      error: 'Failed to generate OTP'
+      error: `Failed to generate OTP: ${error.message}`
     };
   }
 }
@@ -295,140 +395,263 @@ export async function generateOtp(phone: string): Promise<{
 // ----------------------------------------------------------------------
 // ASSIGN TICKET TO ATTENDEE
 // ----------------------------------------------------------------------
-export async function assignTicketToAttendee(data: AssignmentData & {
-  otpCode?: string;
-  otpExpiry?: Date;
-}): Promise<{
-  success: boolean;
-  assignmentId?: number;
-  error?: string;
-}> {
+export async function assignTicketToAttendee(assignmentData: AssignmentData): Promise<AssignmentResult> {
   try {
-    // Check if ticket is still available
-    const existingAssignment = await db.select()
-      .from(agentAssignments)
-      .where(and(
-        eq(agentAssignments.ticketId, data.ticketId),
-        eq(agentAssignments.status, 'COMPLETED')
-      ))
-      .then(rows => rows[0]);
-
-    if (existingAssignment) {
-      return {
-        success: false,
-        error: 'Ticket already assigned to another attendee'
-      };
-    }
-
-    // Create assignment record
- const result = await db.insert(agentAssignments).values({
-  ticketId: data.ticketId,
-  agentId: data.agentId,
-  assignedTo: data.assigneeName,
-  assignedPhone: data.assigneePhone,
-  assignedEmail: data.assigneeEmail,
-  assignmentType: 'MANUAL',
-  status: 'COMPLETED',
-  otpCode: data.otpCode,
-  otpExpiry: data.otpExpiry,
-  metadata: JSON.stringify({
-    assignedAt: new Date().toISOString(),
-    requireOtp: data.requireOtp || false
-  })
-});
-
-// Get the inserted assignment ID (MySQL)
-const assignmentId = result.insertId;
-
-// Optionally, fetch the full assignment row if needed
-const assignment = await db.query.agentAssignments.findFirst({
-  where: eq(agentAssignments.id, assignmentId),
-});
-
-
-    // Update the attendee record based on ticket type
+    // Verify ticket exists and is assignable
     const ticket = await db.select()
       .from(tickets)
-      .where(eq(tickets.id, data.ticketId))
+      .where(eq(tickets.id, assignmentData.ticketId))
       .then(rows => rows[0]);
-
+    
     if (!ticket) {
       return {
         success: false,
         error: 'Ticket not found'
       };
     }
-
-    // Update the attendee information
-    if (ticket.ticketType === 'ADULT') {
-      await db.update(adults)
-        .set({
-          fullName: data.assigneeName,
-          phoneNumber: data.assigneePhone,
-          updatedAt: new Date()
-        })
-        .where(eq(adults.ticketId, data.ticketId));
-    } else if (ticket.ticketType === 'STUDENT') {
-      await db.update(students)
-        .set({
-          fullName: data.assigneeName,
-          updatedAt: new Date()
-        })
-        .where(eq(students.ticketId, data.ticketId));
-    } else if (ticket.ticketType === 'CHILD') {
-      await db.update(children)
-        .set({
-          fullName: data.assigneeName,
-          updatedAt: new Date()
-        })
-        .where(eq(children.ticketId, data.ticketId));
+    
+    if (ticket.status !== 'ACTIVE' || ticket.paymentStatus !== 'PAID') {
+      return {
+        success: false,
+        error: `Ticket cannot be assigned. Status: ${ticket.status}, Payment: ${ticket.paymentStatus}`
+      };
     }
+    
+    // Check for existing active assignment
+    const existingAssignment = await db.select()
+      .from(ticketAssignments)
+      .where(
+        and(
+          eq(ticketAssignments.ticketId, assignmentData.ticketId),
+          eq(ticketAssignments.status, 'ACTIVE')
+        )
+      )
+      .then(rows => rows[0]);
+    
+    if (existingAssignment) {
+      return {
+        success: false,
+        error: `Ticket already assigned to: ${existingAssignment.assignedTo}`
+      };
+    }
+    
+    // Create assignment record
+    const assignment = await db.insert(ticketAssignments).values({
+      ticketId: assignmentData.ticketId,
+      assignedTo: assignmentData.assigneeName,
+      assignedPhone: assignmentData.assigneePhone,
+      assignedEmail: assignmentData.assigneeEmail,
+      assigneeType: assignmentData.assigneeType || 'GENERAL',
+      agentId: assignmentData.agentId,
+      status: 'ACTIVE',
+      assignmentType: 'AGENT_ASSIGNED',
+      metadata: JSON.stringify({
+        requireOtp: assignmentData.requireOtp,
+        otpVerified: assignmentData.requireOtp && assignmentData.otpCode ? true : false,
+        otpExpiry: assignmentData.otpExpiry,
+        originalOwner: {
+          name: ticket.purchaserName,
+          phone: ticket.purchaserPhone
+        },
+        notes: assignmentData.notes,
+        assignmentTimestamp: new Date().toISOString()
+      }),
+      createdAt: new Date(),
+      updatedAt: new Date()
+    }).returning();
 
+    // Update ticket metadata to mark as assigned
+    await db.update(tickets)
+      .set({
+        metadata: JSON.stringify({
+          ...JSON.parse(ticket.metadata || '{}'),
+          isAssigned: true,
+          assignedTo: assignmentData.assigneeName,
+          assignedPhone: assignmentData.assigneePhone,
+          assignmentId: assignment[0].id,
+          assignmentDate: new Date().toISOString(),
+          assignedByAgent: assignmentData.agentId
+        }),
+        updatedAt: new Date()
+      })
+      .where(eq(tickets.id, assignmentData.ticketId));
+    
+    // Send confirmation to new assignee (optional)
+    if (assignmentData.assigneePhone && assignmentData.assigneePhone !== 'N/A') {
+      // Send SMS notification
+      const message = `Hello ${assignmentData.assigneeName},\n\n` +
+        `You have been assigned a ticket for the event.\n` +
+        `Ticket Code: ${ticket.ticketCode}\n` +
+        `Event: ${ticket.metadata ? JSON.parse(ticket.metadata).dayName || '' : ''}\n` +
+        `Please present this ticket at the entrance.\n\n` +
+        `Thank you!`;
+      
+      // await sendSMS(assignmentData.assigneePhone, message);
+      console.log(`SMS would be sent to ${assignmentData.assigneePhone}: ${message}`);
+    }
+    
     return {
       success: true,
-      assignmentId: assignment.id
+      message: 'Ticket assigned successfully',
+      assignmentId: assignment[0].id,
+      data: {
+        ticketCode: ticket.ticketCode,
+        assigneeName: assignmentData.assigneeName,
+        assigneePhone: assignmentData.assigneePhone,
+        assignmentDate: new Date().toISOString()
+      }
     };
+    
   } catch (error: any) {
-    console.error('Assignment error:', error);
+    console.error('Error assigning ticket:', error);
     return {
       success: false,
-      error: 'Failed to assign ticket'
+      error: `Assignment failed: ${error.message}`
     };
   }
 }
 
 // ----------------------------------------------------------------------
-// GET AGENT ASSIGNMENT HISTORY
+// GET AGENT ASSIGNMENTS
 // ----------------------------------------------------------------------
-export async function getAgentAssignments(agentId: string, limit: number = 20): Promise<{
+export async function getAgentAssignments(agentId: string, limit: number = 50): Promise<{
   success: boolean;
   data: any[];
   error?: string;
 }> {
   try {
     const assignments = await db.select({
-      assignment: agentAssignments,
-      ticket: tickets,
-      day: eventDays,
-      session: eventSessions
+      assignment: ticketAssignments,
+      ticket: tickets
     })
-    .from(agentAssignments)
-    .innerJoin(tickets, eq(agentAssignments.ticketId, tickets.id))
-    .innerJoin(eventSessions, eq(tickets.sessionId, eventSessions.id))
-    .innerJoin(eventDays, eq(eventSessions.dayId, eventDays.id))
-    .where(eq(agentAssignments.agentId, agentId))
-    .orderBy(desc(agentAssignments.createdAt))
+    .from(ticketAssignments)
+    .innerJoin(tickets, eq(ticketAssignments.ticketId, tickets.id))
+    .where(eq(ticketAssignments.agentId, agentId))
+    .orderBy(ticketAssignments.createdAt)
     .limit(limit);
-
+    
     return {
       success: true,
       data: assignments
     };
+    
   } catch (error: any) {
+    console.error('Error fetching agent assignments:', error);
     return {
       success: false,
       data: [],
-      error: 'Failed to fetch assignments'
+      error: `Failed to fetch assignments: ${error.message}`
+    };
+  }
+}
+
+// ----------------------------------------------------------------------
+// GET ASSIGNMENT BY TICKET CODE
+// ----------------------------------------------------------------------
+export async function getAssignmentByTicketCode(ticketCode: string): Promise<{
+  success: boolean;
+  data?: any;
+  error?: string;
+}> {
+  try {
+    const result = await db.select({
+      assignment: ticketAssignments,
+      ticket: tickets
+    })
+    .from(ticketAssignments)
+    .innerJoin(tickets, eq(ticketAssignments.ticketId, tickets.id))
+    .where(eq(tickets.ticketCode, ticketCode))
+    .then(rows => rows[0]);
+    
+    if (!result) {
+      return {
+        success: false,
+        error: 'No assignment found for this ticket'
+      };
+    }
+    
+    return {
+      success: true,
+      data: result
+    };
+    
+  } catch (error: any) {
+    console.error('Error fetching assignment:', error);
+    return {
+      success: false,
+      error: `Failed to fetch assignment: ${error.message}`
+    };
+  }
+}
+
+// ----------------------------------------------------------------------
+// CANCEL/REVOKE ASSIGNMENT
+// ----------------------------------------------------------------------
+export async function cancelAssignment(assignmentId: number, agentId: string): Promise<AssignmentResult> {
+  try {
+    const assignment = await db.select()
+      .from(ticketAssignments)
+      .where(eq(ticketAssignments.id, assignmentId))
+      .then(rows => rows[0]);
+    
+    if (!assignment) {
+      return {
+        success: false,
+        error: 'Assignment not found'
+      };
+    }
+    
+    if (assignment.agentId !== agentId) {
+      return {
+        success: false,
+        error: 'You can only cancel your own assignments'
+      };
+    }
+    
+    // Mark assignment as cancelled
+    await db.update(ticketAssignments)
+      .set({
+        status: 'CANCELLED',
+        updatedAt: new Date(),
+        metadata: JSON.stringify({
+          ...JSON.parse(assignment.metadata || '{}'),
+          cancelledAt: new Date().toISOString(),
+          cancelledBy: agentId,
+          reason: 'Cancelled by agent'
+        })
+      })
+      .where(eq(ticketAssignments.id, assignmentId));
+    
+    // Update ticket metadata
+    const ticket = await db.select()
+      .from(tickets)
+      .where(eq(tickets.id, assignment.ticketId))
+      .then(rows => rows[0]);
+    
+    if (ticket) {
+      await db.update(tickets)
+        .set({
+          metadata: JSON.stringify({
+            ...JSON.parse(ticket.metadata || '{}'),
+            isAssigned: false,
+            assignmentCancelled: true,
+            assignmentCancelledAt: new Date().toISOString()
+          }),
+          updatedAt: new Date()
+        })
+        .where(eq(tickets.id, assignment.ticketId));
+    }
+    
+    return {
+      success: true,
+      message: 'Assignment cancelled successfully'
+    };
+    
+  } catch (error: any) {
+    console.error('Error cancelling assignment:', error);
+    return {
+      success: false,
+      error: `Failed to cancel assignment: ${error.message}`
     };
   }
 }
