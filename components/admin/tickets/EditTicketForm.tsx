@@ -1,16 +1,69 @@
 // app/admin/tickets/[id]/edit/EditTicketForm.tsx
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useToast } from '@/components/providers/ToastProvider';
 import { 
   Ticket, Calendar, Clock, User, Phone, DollarSign, Users, 
   GraduationCap, Baby, Save, X, Loader, CreditCard, Database,
-  Tag, Building, FileText, MessageSquare, Trash2
+  Tag, Building, FileText, MessageSquare, Trash2, Copy, Check,
+  ChevronLeft, ChevronRight, RefreshCw
 } from 'lucide-react';
 
-// ... interfaces remain the same ...
+interface TicketFormData {
+  id: number;
+  sessionId: string;
+  purchaserName: string;
+  purchaserPhone: string;
+  ticketType: string;
+  totalAmount: string;
+  paymentStatus: string;
+  adultQuantity: number;
+  studentQuantity: number;
+  childQuantity: number;
+  studentId: string;
+  institution: string;
+  ticketCode: string;
+}
+
+interface TransactionFormData {
+  id?: number;
+  externalId: string;
+  reference: string;
+  transId: string;
+  provider: string;
+  accountNumber: string;
+  amount: string;
+  currency: string;
+  status: string;
+  message: string;
+}
+
+interface SessionData {
+  id: number;
+  name: string;
+  startTime: string;
+  endTime: string;
+  dayName: string;
+  dayDate: string | null;
+}
+
+interface SessionOption {
+  id: number;
+  name: string;
+  dayName: string;
+  date: string | null;
+  startTime: string;
+  endTime: string;
+}
+
+interface EditTicketFormProps {
+  initialData: TicketFormData;
+  transaction: TransactionFormData | null;
+  currentSession: SessionData | null;
+  sessions: SessionOption[];
+}
 
 export default function EditTicketForm({ 
   initialData, 
@@ -21,7 +74,9 @@ export default function EditTicketForm({
   const router = useRouter();
   const { addToast } = useToast();
   const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [activeTab, setActiveTab] = useState<'ticket' | 'transaction' | 'session'>('ticket');
+  const [copied, setCopied] = useState(false);
   
   const [ticketForm, setTicketForm] = useState<TicketFormData>(initialData);
   const [transactionForm, setTransactionForm] = useState<TransactionFormData>(
@@ -41,29 +96,74 @@ export default function EditTicketForm({
   // Update forms when initialData changes
   useEffect(() => {
     setTicketForm(initialData);
-  }, [initialData]);
+    if (transaction) {
+      setTransactionForm(transaction);
+    }
+  }, [initialData, transaction]);
 
+  // Calculate totals
+  const totalQuantity = ticketForm.adultQuantity + ticketForm.studentQuantity + ticketForm.childQuantity;
+
+  // Copy to clipboard handler
+  const handleCopyCode = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(ticketForm.ticketCode);
+      setCopied(true);
+      addToast('Ticket code copied to clipboard!', 'success');
+      setTimeout(() => setCopied(false), 2000);
+    } catch (error) {
+      console.error('Failed to copy:', error);
+      addToast('Failed to copy ticket code', 'error');
+    }
+  }, [ticketForm.ticketCode, addToast]);
+
+  // Handle ticket form changes
+  const handleTicketChange = useCallback((e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+    const { name, value, type } = e.target;
+    
+    if (type === 'number') {
+      const numValue = value === '' ? 0 : Math.max(0, parseInt(value) || 0);
+      setTicketForm(prev => ({ ...prev, [name]: numValue }));
+    } else {
+      setTicketForm(prev => ({ ...prev, [name]: value }));
+    }
+  }, []);
+
+  // Handle transaction form changes
+  const handleTransactionChange = useCallback((e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
+    const { name, value } = e.target;
+    setTransactionForm(prev => ({ ...prev, [name]: value }));
+  }, []);
+
+  // Handle session change
+  const handleSessionChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
+    setTicketForm(prev => ({ ...prev, sessionId: e.target.value }));
+  }, []);
+
+  // Ticket form submission
   const handleTicketSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
+    setSaving(true);
     
     try {
       const response = await fetch(`/api/admin/tickets/${initialData.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(ticketForm),
+        body: JSON.stringify({
+          ...ticketForm,
+          adultQuantity: Number(ticketForm.adultQuantity) || 0,
+          studentQuantity: Number(ticketForm.studentQuantity) || 0,
+          childQuantity: Number(ticketForm.childQuantity) || 0,
+          totalAmount: Number(ticketForm.totalAmount) || 0,
+          sessionId: ticketForm.sessionId ? parseInt(ticketForm.sessionId) : null,
+        }),
       });
       
       const data = await response.json();
       
       if (response.ok) {
         addToast('Ticket updated successfully!', 'success');
-        
-        // Redirect after a short delay to show the toast
-        setTimeout(() => {
-          router.push('/admin/tickets');
-          router.refresh();
-        }, 1500);
+        router.refresh();
       } else {
         addToast(data.error || 'Failed to update ticket', 'error');
       }
@@ -71,16 +171,16 @@ export default function EditTicketForm({
       console.error('Error updating ticket:', error);
       addToast('An error occurred while updating the ticket', 'error');
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
   };
 
+  // Transaction form submission
   const handleTransactionSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
+    setSaving(true);
     
     try {
-      // Ensure we have the ticket ID
       if (!ticketForm.id) {
         addToast('Ticket ID is required', 'error');
         return;
@@ -98,13 +198,13 @@ export default function EditTicketForm({
         body: JSON.stringify({
           ...transactionForm,
           ticketId: ticketForm.id,
+          amount: transactionForm.amount ? parseFloat(transactionForm.amount) : null,
         }),
       });
       
       const data = await response.json();
       
       if (response.ok) {
-        // Update the transaction form with the response data
         if (data.id) {
           setTransactionForm(prev => ({ ...prev, id: data.id }));
         }
@@ -120,18 +220,21 @@ export default function EditTicketForm({
       console.error('Error saving transaction:', error);
       addToast('An error occurred while saving the transaction', 'error');
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
   };
 
+  // Session update
   const handleSessionUpdate = async () => {
-    setLoading(true);
+    setSaving(true);
     
     try {
       const response = await fetch(`/api/admin/tickets/${initialData.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: ticketForm.sessionId }),
+        body: JSON.stringify({ 
+          sessionId: ticketForm.sessionId ? parseInt(ticketForm.sessionId) : null 
+        }),
       });
       
       const data = await response.json();
@@ -146,16 +249,17 @@ export default function EditTicketForm({
       console.error('Error updating session:', error);
       addToast('An error occurred while updating the session', 'error');
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
   };
 
+  // Delete transaction
   const handleDeleteTransaction = async () => {
     if (!transactionForm.id || !confirm('Are you sure you want to delete this transaction?')) {
       return;
     }
 
-    setLoading(true);
+    setSaving(true);
     
     try {
       const response = await fetch(`/api/admin/transactions/${transactionForm.id}`, {
@@ -163,7 +267,6 @@ export default function EditTicketForm({
       });
       
       if (response.ok) {
-        // Reset transaction form
         setTransactionForm({
           externalId: '',
           reference: '',
@@ -185,94 +288,111 @@ export default function EditTicketForm({
       console.error('Error deleting transaction:', error);
       addToast('An error occurred while deleting the transaction', 'error');
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
   };
 
-  const handleTransactionChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
-    const { name, value } = e.target;
-    setTransactionForm(prev => ({ 
-      ...prev, 
-      [name]: value 
-    }));
+  // Reset form to initial values
+  const handleResetForm = () => {
+    setTicketForm(initialData);
+    if (transaction) {
+      setTransactionForm(transaction);
+    } else {
+      setTransactionForm({
+        externalId: '',
+        reference: '',
+        transId: '',
+        provider: '',
+        accountNumber: '',
+        amount: '',
+        currency: 'TZS',
+        status: 'PENDING',
+        message: '',
+      });
+    }
+    addToast('Form reset to original values', 'info');
   };
 
-  const handleTicketNumberChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = e.target;
-    setTicketForm(prev => ({ 
-      ...prev, 
-      [name]: parseInt(value) || 0 
-    }));
-  };
-
-  // Calculate total quantity
-  const totalQuantity = ticketForm.adultQuantity + ticketForm.studentQuantity + ticketForm.childQuantity;
+  // Render tabs
+  const renderTabs = () => (
+    <div className="flex border-b border-gray-200 mb-6 overflow-x-auto">
+      <button
+        onClick={() => setActiveTab('ticket')}
+        className={`flex-shrink-0 px-4 py-2 font-medium text-sm ${activeTab === 'ticket' ? 'border-b-2 border-[#A81010] text-[#A81010]' : 'text-gray-500 hover:text-gray-700'}`}
+      >
+        <div className="flex items-center gap-2">
+          <Ticket size={16} />
+          Ticket Details
+        </div>
+      </button>
+      <button
+        onClick={() => setActiveTab('transaction')}
+        className={`flex-shrink-0 px-4 py-2 font-medium text-sm ${activeTab === 'transaction' ? 'border-b-2 border-[#A81010] text-[#A81010]' : 'text-gray-500 hover:text-gray-700'}`}
+      >
+        <div className="flex items-center gap-2">
+          <CreditCard size={16} />
+          Transaction
+        </div>
+      </button>
+      <button
+        onClick={() => setActiveTab('session')}
+        className={`flex-shrink-0 px-4 py-2 font-medium text-sm ${activeTab === 'session' ? 'border-b-2 border-[#A81010] text-[#A81010]' : 'text-gray-500 hover:text-gray-700'}`}
+      >
+        <div className="flex items-center gap-2">
+          <Calendar size={16} />
+          Session
+        </div>
+      </button>
+    </div>
+  );
 
   return (
     <div className="max-w-6xl mx-auto">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Edit Ticket #{initialData.id}</h1>
-        <p className="text-sm text-gray-500">Update ticket, transaction, and session information.</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">Edit Ticket #{initialData.id}</h1>
+            <p className="text-sm text-gray-500">Update ticket, transaction, and session information.</p>
+          </div>
+          <button
+            onClick={handleResetForm}
+            className="px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors flex items-center gap-2"
+          >
+            <RefreshCw size={16} />
+            Reset
+          </button>
+        </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex border-b border-gray-200 mb-6">
-        <button
-          onClick={() => setActiveTab('ticket')}
-          className={`px-4 py-2 font-medium text-sm ${activeTab === 'ticket' ? 'border-b-2 border-[#A81010] text-[#A81010]' : 'text-gray-500 hover:text-gray-700'}`}
-        >
-          <div className="flex items-center gap-2">
-            <Ticket size={16} />
-            Ticket Details
-          </div>
-        </button>
-        <button
-          onClick={() => setActiveTab('transaction')}
-          className={`px-4 py-2 font-medium text-sm ${activeTab === 'transaction' ? 'border-b-2 border-[#A81010] text-[#A81010]' : 'text-gray-500 hover:text-gray-700'}`}
-        >
-          <div className="flex items-center gap-2">
-            <CreditCard size={16} />
-            Transaction
-          </div>
-        </button>
-        <button
-          onClick={() => setActiveTab('session')}
-          className={`px-4 py-2 font-medium text-sm ${activeTab === 'session' ? 'border-b-2 border-[#A81010] text-[#A81010]' : 'text-gray-500 hover:text-gray-700'}`}
-        >
-          <div className="flex items-center gap-2">
-            <Calendar size={16} />
-            Session
-          </div>
-        </button>
-      </div>
+      {renderTabs()}
 
       {/* Ticket Details Tab */}
       {activeTab === 'ticket' && (
         <form onSubmit={handleTicketSubmit} className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Basic Information */}
+            {/* Ticket Information */}
             <div className="md:col-span-2">
               <h2 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
-                <User size={20} /> Basic Information
+                <Ticket size={20} /> Ticket Information
               </h2>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Ticket Code
                   </label>
-                  <div className="flex items-center gap-2">
+                  <div className="flex gap-2">
                     <input
                       type="text"
                       value={ticketForm.ticketCode}
                       readOnly
-                      className="w-full px-4 py-2.5 bg-gray-100 border border-gray-200 rounded-lg text-sm font-mono"
+                      className="flex-1 px-4 py-2.5 bg-gray-100 border border-gray-200 rounded-lg text-sm font-mono"
                     />
                     <button
                       type="button"
-                      onClick={() => navigator.clipboard.writeText(ticketForm.ticketCode)}
-                      className="px-3 py-2.5 bg-gray-100 border border-gray-200 rounded-lg hover:bg-gray-200"
+                      onClick={handleCopyCode}
+                      className="px-4 py-2.5 bg-gray-100 border border-gray-200 rounded-lg hover:bg-gray-200 transition-colors flex items-center gap-2"
                     >
-                      <Tag size={16} />
+                      {copied ? <Check size={16} /> : <Copy size={16} />}
                     </button>
                   </div>
                 </div>
@@ -291,6 +411,7 @@ export default function EditTicketForm({
                     <option value="PENDING">Pending</option>
                     <option value="FAILED">Failed</option>
                     <option value="UNPAID">Unpaid</option>
+                    <option value="REFUNDED">Refunded</option>
                   </select>
                 </div>
               </div>
@@ -334,7 +455,7 @@ export default function EditTicketForm({
             {/* Ticket Details */}
             <div>
               <h2 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
-                <Ticket size={20} /> Ticket Details
+                <DollarSign size={20} /> Ticket Details
               </h2>
               <div className="space-y-4">
                 <div>
@@ -377,7 +498,8 @@ export default function EditTicketForm({
             {/* Quantity Breakdown */}
             <div className="md:col-span-2">
               <h2 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
-                <Users size={20} /> Quantity Breakdown (Total: {totalQuantity})
+                <Users size={20} /> Quantity Breakdown
+                <span className="text-sm font-normal text-gray-500 ml-2">(Total: {totalQuantity})</span>
               </h2>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
@@ -390,9 +512,9 @@ export default function EditTicketForm({
                       type="number"
                       name="adultQuantity"
                       value={ticketForm.adultQuantity}
-                      onChange={handleTicketNumberChange}
+                      onChange={handleTicketChange}
                       min="0"
-                      className="w-20 px-2 py-1 bg-white border border-gray-300 rounded text-sm"
+                      className="w-20 px-2 py-1 bg-white border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-[#A81010]"
                     />
                   </div>
                   <p className="text-xs text-gray-500">Regular adult tickets</p>
@@ -408,9 +530,9 @@ export default function EditTicketForm({
                       type="number"
                       name="studentQuantity"
                       value={ticketForm.studentQuantity}
-                      onChange={handleTicketNumberChange}
+                      onChange={handleTicketChange}
                       min="0"
-                      className="w-20 px-2 py-1 bg-white border border-gray-300 rounded text-sm"
+                      className="w-20 px-2 py-1 bg-white border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-[#A81010]"
                     />
                   </div>
                   <p className="text-xs text-gray-500">Student discount tickets</p>
@@ -426,9 +548,9 @@ export default function EditTicketForm({
                       type="number"
                       name="childQuantity"
                       value={ticketForm.childQuantity}
-                      onChange={handleTicketNumberChange}
+                      onChange={handleTicketChange}
                       min="0"
-                      className="w-20 px-2 py-1 bg-white border border-gray-300 rounded text-sm"
+                      className="w-20 px-2 py-1 bg-white border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-[#A81010]"
                     />
                   </div>
                   <p className="text-xs text-gray-500">Children under 12</p>
@@ -471,22 +593,32 @@ export default function EditTicketForm({
           </div>
 
           {/* Form Actions */}
-          <div className="flex justify-end gap-3 mt-8 pt-6 border-t border-gray-200">
+          <div className="flex flex-col sm:flex-row justify-between gap-3 mt-8 pt-6 border-t border-gray-200">
             <button
               type="button"
               onClick={() => router.back()}
-              className="px-6 py-2.5 border border-gray-300 text-gray-700 rounded-lg font-medium hover:bg-gray-50 transition-colors duration-200 flex items-center gap-2"
+              className="px-6 py-2.5 border border-gray-300 text-gray-700 rounded-lg font-medium hover:bg-gray-50 transition-colors flex items-center justify-center gap-2"
             >
               <X size={16} /> Cancel
             </button>
-            <button
-              type="submit"
-              disabled={loading}
-              className="px-6 py-2.5 bg-[#A81010] text-white rounded-lg font-medium hover:bg-[#8a0d0d] transition-colors duration-200 flex items-center gap-2 disabled:opacity-50"
-            >
-              {loading ? <Loader size={16} className="animate-spin" /> : <Save size={16} />}
-              {loading ? 'Updating...' : 'Update Ticket'}
-            </button>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setActiveTab('transaction')}
+                className="px-6 py-2.5 border border-gray-300 text-gray-700 rounded-lg font-medium hover:bg-gray-50 transition-colors flex items-center gap-2"
+              >
+                Transaction
+                <ChevronRight size={16} />
+              </button>
+              <button
+                type="submit"
+                disabled={saving}
+                className="px-6 py-2.5 bg-[#A81010] text-white rounded-lg font-medium hover:bg-[#8a0d0d] transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {saving ? <Loader size={16} className="animate-spin" /> : <Save size={16} />}
+                {saving ? 'Saving...' : 'Save Ticket'}
+              </button>
+            </div>
           </div>
         </form>
       )}
@@ -557,12 +689,13 @@ export default function EditTicketForm({
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Provider
+                    Provider *
                   </label>
                   <select
                     name="provider"
                     value={transactionForm.provider}
                     onChange={handleTransactionChange}
+                    required
                     className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#A81010]/20 focus:border-[#A81010]"
                   >
                     <option value="">Select provider</option>
@@ -598,13 +731,14 @@ export default function EditTicketForm({
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Amount
+                    Amount *
                   </label>
                   <input
                     type="number"
                     name="amount"
                     value={transactionForm.amount}
                     onChange={handleTransactionChange}
+                    required
                     min="0"
                     step="0.01"
                     className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#A81010]/20 focus:border-[#A81010]"
@@ -612,18 +746,20 @@ export default function EditTicketForm({
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Status
+                    Status *
                   </label>
                   <select
                     name="status"
                     value={transactionForm.status}
                     onChange={handleTransactionChange}
+                    required
                     className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#A81010]/20 focus:border-[#A81010]"
                   >
                     <option value="PENDING">Pending</option>
                     <option value="SUCCESS">Success</option>
                     <option value="FAILED">Failed</option>
                     <option value="CANCELLED">Cancelled</option>
+                    <option value="REFUNDED">Refunded</option>
                   </select>
                 </div>
               </div>
@@ -646,22 +782,46 @@ export default function EditTicketForm({
           </div>
 
           {/* Form Actions */}
-          <div className="flex justify-end gap-3 mt-8 pt-6 border-t border-gray-200">
-            <button
-              type="button"
-              onClick={() => setActiveTab('ticket')}
-              className="px-6 py-2.5 border border-gray-300 text-gray-700 rounded-lg font-medium hover:bg-gray-50 transition-colors duration-200"
-            >
-              Back to Ticket
-            </button>
-            <button
-              type="submit"
-              disabled={loading}
-              className="px-6 py-2.5 bg-[#A81010] text-white rounded-lg font-medium hover:bg-[#8a0d0d] transition-colors duration-200 flex items-center gap-2 disabled:opacity-50"
-            >
-              {loading ? <Loader size={16} className="animate-spin" /> : <Save size={16} />}
-              {loading ? 'Saving...' : 'Save Transaction'}
-            </button>
+          <div className="flex flex-col sm:flex-row justify-between gap-3 mt-8 pt-6 border-t border-gray-200">
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setActiveTab('ticket')}
+                className="px-6 py-2.5 border border-gray-300 text-gray-700 rounded-lg font-medium hover:bg-gray-50 transition-colors flex items-center gap-2"
+              >
+                <ChevronLeft size={16} />
+                Ticket
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('session')}
+                className="px-6 py-2.5 border border-gray-300 text-gray-700 rounded-lg font-medium hover:bg-gray-50 transition-colors flex items-center gap-2"
+              >
+                Session
+                <ChevronRight size={16} />
+              </button>
+            </div>
+            <div className="flex gap-3">
+              {transactionForm.id && (
+                <button
+                  type="button"
+                  onClick={handleDeleteTransaction}
+                  disabled={saving}
+                  className="px-6 py-2.5 border border-red-300 text-red-700 rounded-lg font-medium hover:bg-red-50 transition-colors flex items-center gap-2 disabled:opacity-50"
+                >
+                  <Trash2 size={16} />
+                  Delete
+                </button>
+              )}
+              <button
+                type="submit"
+                disabled={saving}
+                className="px-6 py-2.5 bg-[#A81010] text-white rounded-lg font-medium hover:bg-[#8a0d0d] transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {saving ? <Loader size={16} className="animate-spin" /> : <Save size={16} />}
+                {saving ? 'Saving...' : 'Save Transaction'}
+              </button>
+            </div>
           </div>
         </form>
       )}
@@ -693,7 +853,14 @@ export default function EditTicketForm({
                   {currentSession.dayDate && (
                     <div>
                       <p className="text-sm text-gray-600">Date</p>
-                      <p className="font-bold">{new Date(currentSession.dayDate).toLocaleDateString()}</p>
+                      <p className="font-bold">
+                        {new Date(currentSession.dayDate).toLocaleDateString('en-US', {
+                          weekday: 'long',
+                          year: 'numeric',
+                          month: 'long',
+                          day: 'numeric'
+                        })}
+                      </p>
                     </div>
                   )}
                 </div>
@@ -706,17 +873,18 @@ export default function EditTicketForm({
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-3">
-                Assign to New Session *
+                Assign to New Session
               </label>
               <select
                 value={ticketForm.sessionId}
-                onChange={(e) => setTicketForm(prev => ({ ...prev, sessionId: e.target.value }))}
+                onChange={handleSessionChange}
                 className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#A81010]/20 focus:border-[#A81010]"
               >
                 <option value="">Select a session</option>
                 {sessions.map((session) => (
                   <option key={session.id} value={session.id}>
                     {session.dayName} - {session.name} ({session.startTime} - {session.endTime})
+                    {session.date && ` - ${new Date(session.date).toLocaleDateString()}`}
                   </option>
                 ))}
               </select>
@@ -724,22 +892,25 @@ export default function EditTicketForm({
           </div>
 
           {/* Form Actions */}
-          <div className="flex justify-end gap-3 mt-8 pt-6 border-t border-gray-200">
+          <div className="flex flex-col sm:flex-row justify-between gap-3 mt-8 pt-6 border-t border-gray-200">
             <button
               type="button"
-              onClick={() => setActiveTab('ticket')}
-              className="px-6 py-2.5 border border-gray-300 text-gray-700 rounded-lg font-medium hover:bg-gray-50 transition-colors duration-200"
+              onClick={() => setActiveTab('transaction')}
+              className="px-6 py-2.5 border border-gray-300 text-gray-700 rounded-lg font-medium hover:bg-gray-50 transition-colors flex items-center gap-2"
             >
-              Back to Ticket
+              <ChevronLeft size={16} />
+              Transaction
             </button>
-            <button
-              onClick={handleSessionUpdate}
-              disabled={loading || !ticketForm.sessionId}
-              className="px-6 py-2.5 bg-[#A81010] text-white rounded-lg font-medium hover:bg-[#8a0d0d] transition-colors duration-200 flex items-center gap-2 disabled:opacity-50"
-            >
-              {loading ? <Loader size={16} className="animate-spin" /> : <Save size={16} />}
-              {loading ? 'Updating...' : 'Update Session'}
-            </button>
+            <div className="flex gap-3">
+              <button
+                onClick={handleSessionUpdate}
+                disabled={saving || !ticketForm.sessionId}
+                className="px-6 py-2.5 bg-[#A81010] text-white rounded-lg font-medium hover:bg-[#8a0d0d] transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {saving ? <Loader size={16} className="animate-spin" /> : <Save size={16} />}
+                {saving ? 'Saving...' : 'Update Session'}
+              </button>
+            </div>
           </div>
         </div>
       )}

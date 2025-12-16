@@ -5,57 +5,137 @@ import { db } from '@/lib/db/db';
 import { tickets, eventSessions, eventDays, transactions } from '@/lib/drizzle/schema';
 import { eq } from 'drizzle-orm';
 
+interface FormattedTicket {
+  id: number;
+  sessionId: string;
+  purchaserName: string;
+  purchaserPhone: string;
+  ticketType: string;
+  totalAmount: string;
+  paymentStatus: string;
+  adultQuantity: number;
+  studentQuantity: number;
+  childQuantity: number;
+  studentId: string;
+  institution: string;
+  ticketCode: string;
+}
+
+interface FormattedTransaction {
+  id: number;
+  externalId: string;
+  reference: string;
+  transId: string;
+  provider: string;
+  accountNumber: string;
+  amount: string;
+  currency: string;
+  status: string;
+  message: string;
+}
+
+interface FormattedSession {
+  id: number;
+  name: string;
+  startTime: string;
+  endTime: string;
+  dayName: string;
+  dayDate: string | null;
+}
+
+interface SessionOption {
+  id: number;
+  name: string;
+  dayName: string;
+  date: string | null;
+  startTime: string;
+  endTime: string;
+}
+
 export default async function EditTicketPage({
   params,
 }: {
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const ticketId = parseInt(id);
-
-  if (isNaN(ticketId)) {
+  
+  // Validate ticket ID
+  const ticketId = Number(id);
+  if (!ticketId || isNaN(ticketId) || ticketId <= 0) {
     notFound();
   }
 
   try {
-    // Fetch ticket with related data
-    const [ticketData] = await db
-      .select({
-        ticket: tickets,
-        session: eventSessions,
-        day: eventDays,
-      })
-      .from(tickets)
-      .leftJoin(eventSessions, eq(tickets.sessionId, eventSessions.id))
-      .leftJoin(eventDays, eq(eventSessions.dayId, eventDays.id))
-      .where(eq(tickets.id, ticketId));
+    // Parallel data fetching for better performance
+    const [ticketPromise, transactionPromise, sessionsPromise] = await Promise.allSettled([
+      // Fetch ticket with related session and day data
+      db
+        .select({
+          ticket: tickets,
+          session: eventSessions,
+          day: eventDays,
+        })
+        .from(tickets)
+        .leftJoin(eventSessions, eq(tickets.sessionId, eventSessions.id))
+        .leftJoin(eventDays, eq(eventSessions.dayId, eventDays.id))
+        .where(eq(tickets.id, ticketId))
+        .limit(1),
 
-    if (!ticketData) {
+      // Fetch transaction data
+      db
+        .select()
+        .from(transactions)
+        .where(eq(transactions.ticketId, ticketId))
+        .limit(1),
+
+      // Fetch all sessions for dropdown
+      db
+        .select({
+          id: eventSessions.id,
+          name: eventSessions.name,
+          dayName: eventDays.name,
+          date: eventDays.date,
+          startTime: eventSessions.startTime,
+          endTime: eventSessions.endTime,
+        })
+        .from(eventSessions)
+        .leftJoin(eventDays, eq(eventSessions.dayId, eventDays.id))
+        .orderBy(eventDays.date, eventSessions.startTime),
+    ]);
+
+    // Handle ticket fetch result
+    if (ticketPromise.status === 'rejected') {
+      console.error('Error fetching ticket:', ticketPromise.reason);
       notFound();
     }
 
-    // Fetch transaction data
-    const [transactionData] = await db
-      .select()
-      .from(transactions)
-      .where(eq(transactions.ticketId, ticketId));
+    const ticketResult = ticketPromise.value;
+    if (!ticketResult || ticketResult.length === 0) {
+      notFound();
+    }
 
-    // Fetch all sessions for the dropdown
-    const allSessions = await db
-      .select({
-        id: eventSessions.id,
-        name: eventSessions.name,
-        dayName: eventDays.name,
-        date: eventDays.date,
-        startTime: eventSessions.startTime,
-        endTime: eventSessions.endTime,
-      })
-      .from(eventSessions)
-      .leftJoin(eventDays, eq(eventSessions.dayId, eventDays.id))
-      .orderBy(eventDays.date, eventSessions.startTime);
+    const [ticketData] = ticketResult;
+    if (!ticketData.ticket) {
+      notFound();
+    }
 
-    // Prepare data for client component
-    const formattedTicket = {
+    // Handle transaction fetch result
+    let transactionData = null;
+    if (transactionPromise.status === 'fulfilled' && transactionPromise.value.length > 0) {
+      [transactionData] = transactionPromise.value;
+    }
+
+    // Handle sessions fetch result
+    let allSessions: SessionOption[] = [];
+    if (sessionsPromise.status === 'fulfilled') {
+      allSessions = sessionsPromise.value.map(session => ({
+        ...session,
+        date: session.date ? session.date.toISOString() : null,
+      }));
+    }
+
+    // Format ticket data with null safety
+    const formattedTicket: FormattedTicket = {
       id: ticketData.ticket.id,
       sessionId: ticketData.ticket.sessionId?.toString() || '',
       purchaserName: ticketData.ticket.purchaserName || '',
@@ -71,7 +151,8 @@ export default async function EditTicketPage({
       ticketCode: ticketData.ticket.ticketCode || '',
     };
 
-    const formattedTransaction = transactionData ? {
+    // Format transaction data
+    const formattedTransaction: FormattedTransaction | null = transactionData ? {
       id: transactionData.id,
       externalId: transactionData.externalId || '',
       reference: transactionData.reference || '',
@@ -84,30 +165,26 @@ export default async function EditTicketPage({
       message: transactionData.message || '',
     } : null;
 
-    const formattedSession = ticketData.session ? {
+    // Format current session data
+    const formattedSession: FormattedSession | null = ticketData.session ? {
       id: ticketData.session.id,
-      name: ticketData.session.name,
-      startTime: ticketData.session.startTime,
-      endTime: ticketData.session.endTime,
+      name: ticketData.session.name || '',
+      startTime: ticketData.session.startTime || '',
+      endTime: ticketData.session.endTime || '',
       dayName: ticketData.day?.name || '',
-      dayDate: ticketData.day?.date || null,
+      dayDate: ticketData.day?.date ? ticketData.day.date.toISOString() : null,
     } : null;
-
-    const formattedSessions = allSessions.map(session => ({
-      ...session,
-      date: session.date ? session.date.toISOString() : null,
-    }));
 
     return (
       <EditTicketForm 
         initialData={formattedTicket}
         transaction={formattedTransaction}
         currentSession={formattedSession}
-        sessions={formattedSessions} 
+        sessions={allSessions} 
       />
     );
   } catch (error) {
-    console.error('Error fetching ticket:', error);
+    console.error('Unexpected error in EditTicketPage:', error);
     notFound();
   }
 }
