@@ -109,11 +109,11 @@ export default function StepDaySelection({ days, selectedDayId, onSelect }: Prop
                     }`}>
                       {soldOut ? 'Sold Out' : (day.isActive ? 'Available' : 'Closed')}
                     </span>
-                    {soldOut && (
+                    {/* {soldOut && (
                       <span className="px-2 py-1 text-xs font-medium bg-red-100 text-red-700 rounded-full">
                         Unavailable
                       </span>
-                    )}
+                    )} */}
                   </div>
                 </div>
               </div>
