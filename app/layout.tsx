@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "TheKingandthecode",
+  title: "TheKing&TheCode",
   // Using backticks (``) allows the string to span multiple lines
   description: `The King & The Code is a stage play production by Pastor Tony Osborn Ministries 
   featuring a Swahili drama accompanied with live music, spoken word, 
