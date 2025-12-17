@@ -24,7 +24,7 @@ function buildSmsMessage(status: 'SUCCESS'| 'FAIL'  | 'FAILED' | 'PENDING' | 'UN
 
   switch (status) {
     case 'SUCCESS':
-      return `Hongera malipo yako ya Ticket yamepokelewa kikamilifu. Asante kwa kujisajili. Kwa mawasiliano zaidi, pigia 0753085789. Ref: ${transId}.`;
+      return `Hongera malipo yako ya ticket yamepokelewa kikamilifu .Kwa taarifa zaidi wasiliana nasi 0753085789.`;
     case 'FAILED':
       return `Samahani, malipo yako ya Ticket YAMEKATALIWA. Tafadhali jaribu tena au wasiliana na support kwa msaada. Ref: ${transId}.`;
     case 'FAIL':
@@ -33,7 +33,7 @@ function buildSmsMessage(status: 'SUCCESS'| 'FAIL'  | 'FAILED' | 'PENDING' | 'UN
       return `Malipo yako ya Ticket yanashughulikiwa (PENDING). Utapokea confirmation SMS punde. Ref: ${transId}.`;
     case 'UNKNOWN':
     default:
-      return `Tumepokea ujumbe wa muamala (Ref: ${transId}) lakini hali yake haijulikani. Tafadhali subiri uthibitisho au wasiliana nasi.`;
+      return `Tumepokea ujumbe wa muamala (Ref: ${transId}) , Tafadhali subiri uthibitisho au wasiliana nasi.`;
   }
 }
 

@@ -5,7 +5,8 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "TheKingandthecode",
-  description: "the king and the code is the christmass played by the code family",
+  description: "
+The King & The Code is a stage play production by Pastor Tony Osborn Ministries featuring a Swahili drama accompanied with live music, spoken word, dance numbers and so much more.",
 };
 
 export default function RootLayout({
