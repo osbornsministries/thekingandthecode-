@@ -1,396 +1,196 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/db/db';
-import { tickets, transactions } from '@/lib/drizzle/schema';
-import { eq } from 'drizzle-orm';
+import { transactions } from '@/lib/drizzle/schema/transactions';
+import { tickets } from '@/lib/drizzle/schema/tickets';
+import { eq, and } from 'drizzle-orm';
 import { SMSService } from '@/lib/services/sms';
 import { updateSessionCountsAfterPurchase } from '@/lib/utils/session-limits';
-import fs from 'fs/promises';
-import path from 'path';
+import { sql } from 'drizzle-orm'
 
-/* -------------------------------------------------------------------------- */
-/*                                   TYPES                                    */
-/* -------------------------------------------------------------------------- */
+// --------------------------------------------------------------------------
+// SMS UTILITIES
+// --------------------------------------------------------------------------
 
-interface AzamPayCallbackData {
-  msisdn: string;
-  amount: string;
-  message: string;
-  utilityref: string;
-  operator: string;
-  reference: string;
-  transactionstatus: string;
-  submerchantAcc: string;
-  transid: string;
-}
+/**
+ * Builds the SMS message based on the transaction status.
+ */
+function buildSmsMessage(status: 'SUCCESS'| 'FAIL'  | 'FAILED' | 'PENDING' | 'UNKNOWN', raw: any): string {
+  // Use the AzamPay message if it clearly indicates failure/success, otherwise use defaults.
+  if (raw.message && raw.transactionstatus?.toLowerCase() !== 'success') {
+      return raw.message;
+  }
+  
+  const transId = raw.transid || raw.reference;
 
-type NormalizedStatus = 'SUCCESS' | 'FAILED' | 'PENDING' | 'UNKNOWN';
-
-/* -------------------------------------------------------------------------- */
-/*                              LOGGER CONFIG                                 */
-/* -------------------------------------------------------------------------- */
-
-const LOGS_DIR = path.join(process.cwd(), 'logs', 'azampay');
-const LOG_TYPES = {
-  CALLBACK: 'callback',
-  ERROR: 'error',
-  SUCCESS: 'success'
-} as const;
-
-type LogType = typeof LOG_TYPES[keyof typeof LOG_TYPES];
-
-/* -------------------------------------------------------------------------- */
-/*                                  LOGGER                                    */
-/* -------------------------------------------------------------------------- */
-
-async function ensureLogsDirectory() {
-  try {
-    await fs.mkdir(LOGS_DIR, { recursive: true });
-  } catch (error) {
-    console.error('Failed to create logs directory:', error);
+  switch (status) {
+    case 'SUCCESS':
+      return `Hongera malipo yako ya Ticket yamepokelewa kikamilifu. Asante kwa kujisajili. Kwa mawasiliano zaidi, pigia 0753085789. Ref: ${transId}.`;
+    case 'FAILED':
+      return `Samahani, malipo yako ya Ticket YAMEKATALIWA. Tafadhali jaribu tena au wasiliana na support kwa msaada. Ref: ${transId}.`;
+    case 'FAIL':
+      return `Samahani, malipo yako ya Ticket YAMEKATALIWA. Tafadhali jaribu tena au wasiliana na support kwa msaada. Ref: ${transId}.`;
+    case 'PENDING':
+      return `Malipo yako ya Ticket yanashughulikiwa (PENDING). Utapokea confirmation SMS punde. Ref: ${transId}.`;
+    case 'UNKNOWN':
+    default:
+      return `Tumepokea ujumbe wa muamala (Ref: ${transId}) lakini hali yake haijulikani. Tafadhali subiri uthibitisho au wasiliana nasi.`;
   }
 }
 
-async function writeToLogFile(type: LogType, message: string, payload?: any) {
-  try {
-    await ensureLogsDirectory();
-    
-    const timestamp = new Date().toISOString();
-    const logEntry = {
-      timestamp,
-      type,
-      message,
-      payload: payload || null
-    };
-    
-    const logString = JSON.stringify(logEntry, null, 2) + ',\n';
-    const logFile = path.join(LOGS_DIR, `${type}.log`);
-    
-    await fs.appendFile(logFile, logString);
-    
-    // Also log to console for immediate visibility
-    console.log(`[AzamPay][${type.toUpperCase()}] ${message}`, payload || '');
-  } catch (error) {
-    console.error(`Failed to write to ${type} log:`, error);
-  }
+/**
+ * Finds the ticket and sends a non-blocking SMS.
+ */
+async function getTicketAndSendSMS(ticketId: number | null, status: 'SUCCESS' | 'FAILED' | 'PENDING' | 'UNKNOWN', raw: any) {
+    if (!ticketId) return;
+
+    try {
+        const ticket = await db.query.tickets.findFirst({
+            where: eq(tickets.id, ticketId),
+        });
+
+        if (ticket?.purchaserPhone) {
+            const smsMsg = buildSmsMessage(status, raw);
+            SMSService.sendSMS(ticket.purchaserPhone, smsMsg).catch(err => 
+                console.error(`SMS for ${status} failed:`, err)
+            );
+        }
+    } catch (error) {
+        console.error("Failed to fetch ticket or send SMS:", error);
+    }
 }
 
-function log(area: string, message: string, payload?: any) {
-  const fullMessage = `[${area}] ${message}`;
-  console.log(`[AzamPay]${fullMessage}`, payload ? JSON.stringify(payload, null, 2) : '');
-  writeToLogFile(LOG_TYPES.CALLBACK, fullMessage, payload);
-}
 
-function logError(area: string, message: string, error?: any) {
-  const fullMessage = `[${area}][ERROR] ${message}`;
-  console.error(`[AzamPay]${fullMessage}`, error instanceof Error ? error.message : error);
-  
-  const errorPayload = {
-    area,
-    message,
-    error: error instanceof Error ? {
-      name: error.name,
-      message: error.message,
-      stack: error.stack
-    } : error
-  };
-  
-  writeToLogFile(LOG_TYPES.ERROR, fullMessage, errorPayload);
-}
-
-function logSuccess(area: string, message: string, payload?: any) {
-  const fullMessage = `[${area}][SUCCESS] ${message}`;
-  console.log(`[AzamPay]${fullMessage}`, payload ? JSON.stringify(payload, null, 2) : '');
-  writeToLogFile(LOG_TYPES.SUCCESS, fullMessage, payload);
-}
-
-/* -------------------------------------------------------------------------- */
-/*                             NORMALIZE CALLBACK                              */
-/* -------------------------------------------------------------------------- */
-
-function normalizeCallback(data: AzamPayCallbackData) {
-  const statusMap: Record<string, NormalizedStatus> = {
-    success: 'SUCCESS',
-    succeeded: 'SUCCESS',
-    failure: 'FAILED',
-    failed: 'FAILED',
-    pending: 'PENDING',
-  };
-
-  return {
-    raw: data,
-    reference: data.utilityref,
-    transId: data.transid,
-    phone: data.msisdn,
-    amount: Number(data.amount),
-    operator: data.operator,
-    message: data.message,
-    status:
-      statusMap[data.transactionstatus?.toLowerCase()] ?? 'UNKNOWN',
-  };
-}
-
-/* -------------------------------------------------------------------------- */
-/*                                  WEBHOOK                                   */
-/* -------------------------------------------------------------------------- */
+// --------------------------------------------------------------------------
+// WEBHOOK POST HANDLER
+// --------------------------------------------------------------------------
 
 export async function POST(req: Request) {
-  const requestMeta = {
-    method: req.method,
-    url: req.url,
-    ip:
-      req.headers.get('x-forwarded-for') ||
-      req.headers.get('x-real-ip') ||
-      'unknown',
-    userAgent: req.headers.get('user-agent'),
-    time: new Date().toISOString(),
-  };
-
-  log('HIT', 'Callback endpoint hit', requestMeta);
-
-  let rawData: AzamPayCallbackData | null = null;
+  let rawData: any = null;
 
   try {
-    /* --------------------------- RAW PAYLOAD --------------------------- */
     rawData = await req.json();
-    log('RAW_PAYLOAD', 'Received raw payload', {
-      ...rawData,
-      msisdn: '***masked***',
-    });
+    console.log('[AzamPay Webhook Received]:', JSON.stringify(rawData));
 
-    /* ------------------------- NORMALIZED DATA -------------------------- */
-    const callback = normalizeCallback(rawData);
-    log('NORMALIZED', 'Normalized callback data', callback);
+    const transId = rawData.transid || rawData.reference || rawData.externalreference;
 
-    if (!callback.reference) {
-      logError('VALIDATION', 'Missing utilityref/reference', callback);
-      return NextResponse.json(
-        { success: false, message: 'Missing reference (utilityref)' },
-        { status: 400 }
-      );
+    if (!transId) {
+      return NextResponse.json({ success: false, message: 'Missing reference' }, { status: 400 });
     }
 
-    /* ---------------------- TRANSACTION LOOKUP ------------------------- */
-    let transaction = await db.query.transactions.findFirst({
-      where: eq(transactions.externalId, callback.reference),
+    // 1. DATABASE LOOKUP 
+    const transaction = await db.query.transactions.findFirst({
+        where: sql`trans_id = ${transId}`, 
     });
 
     if (!transaction) {
-      log('DB_CREATE', 'Creating new transaction', {
-        reference: callback.reference,
-      });
+      console.error(`[Webhook Error]: Transaction ID ${transId} not found.`);
+      return NextResponse.json({ success: false, message: 'Transaction not found' }, { status: 404 });
+    }
 
-      const insertResult = await db.insert(transactions).values({
-        ticketId: null,
-        externalId: callback.reference,
-        reference: callback.reference,
-        transId: callback.transId,
-        provider: callback.operator || 'UNKNOWN',
-        accountNumber: callback.phone,
-        amount: callback.amount,
-        status: callback.status.toLowerCase(),
-        message: callback.message,
-        rawResponse: callback.raw,
-      });
+    // 2. IDEMPOTENCY check (if already final, return success)
+    if (
+        (rawData.transactionstatus?.toLowerCase() === 'success' && transaction.status === 'success') ||
+        ((rawData.transactionstatus?.toLowerCase() === 'failure' || rawData.transactionstatus?.toLowerCase() === 'failed') && transaction.status === 'failed')
+    ) {
+        return NextResponse.json({ success: true, message: 'Already processed' });
+    }
 
-      const [inserted] = await db.query.transactions.findMany({
-        where: eq(transactions.id, insertResult.insertId),
-        limit: 1,
-      });
+    // 3. NORMALIZE STATUS and call handler
+    const azamStatus = rawData.transactionstatus?.toLowerCase();
+    let status: 'SUCCESS' | 'FAILED' | 'PENDING' | 'UNKNOWN';
 
-      transaction = inserted;
+    if (azamStatus === 'success') {
+      await handleSuccess(transaction, rawData);
+      status = 'SUCCESS';
+    } else if (azamStatus === 'failure' || azamStatus === 'failed') {
+      await handleFailure(transaction, rawData);
+      status = 'FAILED';
+    } else if (azamStatus === 'pending') {
+      await handlePending(transaction, rawData);
+      status = 'PENDING';
     } else {
-      log('DB_UPDATE', 'Updating existing transaction', {
-        id: transaction.id,
-        status: callback.status,
-      });
-
-      await db.update(transactions)
-        .set({
-          status: callback.status.toLowerCase(),
-          message: callback.message,
-          transId: callback.transId,
-          rawResponse: callback.raw,
-        })
-        .where(eq(transactions.id, transaction.id));
+      // Default case for unknown status
+      await handleUnknown(transaction, rawData);
+      status = 'UNKNOWN';
     }
 
-    /* -------------------------- STATUS HANDLING -------------------------- */
-    switch (callback.status) {
-      case 'SUCCESS':
-        log('STATUS_SUCCESS', 'Processing success case', callback.reference);
-        await handleSuccess(transaction, callback);
-        break;
+    // 4. Send SMS after DB update
+    await getTicketAndSendSMS(transaction.ticketId, status, rawData);
+    
+    return NextResponse.json({ success: true });
 
-      case 'FAILED':
-        log('STATUS_FAILED', 'Processing failure case', callback.reference);
-        await handleFailure(transaction, callback);
-        break;
-
-      case 'PENDING':
-        log('STATUS_PENDING', 'Processing pending case', callback.reference);
-        await handlePending(transaction);
-        break;
-
-      default:
-        log('STATUS_UNKNOWN', 'Unknown transaction status', callback);
-    }
-
-    const response = {
-      success: true,
-      status: callback.status,
-      reference: callback.reference,
-      message: 'Callback processed',
-    };
-
-    log('RESPONSE', 'Response sent to AzamPay', response);
-    return NextResponse.json(response);
-  } catch (error) {
-    logError('FATAL', 'Unhandled webhook error', {
-      error,
-      rawData,
-    });
-
-    return NextResponse.json(
-      { success: false, message: 'Internal server error' },
-      { status: 500 }
-    );
+  } catch (error: any) {
+    console.error('[CRITICAL WEBHOOK ERROR]:', error);
+    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/*                               CASE HANDLERS                                */
-/* -------------------------------------------------------------------------- */
+// --------------------------------------------------------------------------
+// CASE HANDLERS
+// --------------------------------------------------------------------------
 
-async function handleSuccess(
-  transaction: any,
-  cb: ReturnType<typeof normalizeCallback>
-) {
-  log('SUCCESS_HANDLER', 'Start success handler', transaction.id);
-
-  try {
+async function handleSuccess(transaction: any, raw: any) {
+    // 1. Update Transaction
     await db.update(transactions)
-      .set({ status: 'success' })
+      .set({ status: 'success', message: raw.message || 'Payment Successful', rawResponse: raw })
       .where(eq(transactions.id, transaction.id));
-    logSuccess('SUCCESS_DB', 'Transaction marked as success', {
-      transactionId: transaction.id,
-      reference: cb.reference
-    });
-  } catch (err) {
-    logError('SUCCESS_DB', 'Failed updating transaction', err);
-  }
 
-  if (!transaction.ticketId) {
-    log('SUCCESS_SKIP', 'No ticket linked to transaction', transaction.id);
-    return;
-  }
+    if (!transaction.ticketId) return;
 
-  try {
+    // 2. Update Ticket
     await db.update(tickets)
       .set({ paymentStatus: 'PAID', status: 'CONFIRMED' })
       .where(eq(tickets.id, transaction.ticketId));
-    logSuccess('SUCCESS_TICKET', 'Ticket confirmed', {
-      ticketId: transaction.ticketId,
-      transactionId: transaction.id
-    });
-  } catch (err) {
-    logError('SUCCESS_TICKET', 'Ticket update failed', err);
-  }
 
-  let ticket;
-  try {
-    ticket = await db.query.tickets.findFirst({
-      where: eq(tickets.id, transaction.ticketId),
-    });
-  } catch (err) {
-    logError('SUCCESS_FETCH', 'Failed fetching ticket', err);
-    return;
-  }
-
-  try {
-    const sms = await SMSService.sendSMS(
-      ticket.purchaserPhone,
-      `Hello ${ticket.purchaserName}, payment received. Ref: ${cb.transId}`
-    );
-    logSuccess('SUCCESS_SMS', 'SMS sent', {
-      ticketId: ticket.id,
-      phone: ticket.purchaserPhone,
-      smsResult: sms
-    });
-  } catch (err) {
-    logError('SUCCESS_SMS', 'SMS failed', err);
-  }
-
-  try {
-    await updateSessionCountsAfterPurchase(
-      ticket.sessionId,
-      ticket.ticketType === 'ADULT' ? ticket.totalQuantity : 0,
-      ticket.ticketType === 'STUDENT' ? ticket.totalQuantity : 0,
-      ticket.ticketType === 'CHILD' ? ticket.totalQuantity : 0
-    );
-    logSuccess('SUCCESS_LIMITS', 'Session limits updated', {
-      sessionId: ticket.sessionId,
-      ticketId: ticket.id
-    });
-  } catch (err) {
-    logError('SUCCESS_LIMITS', 'Session limit update failed', err);
-  }
-}
-
-async function handleFailure(
-  transaction: any,
-  cb: ReturnType<typeof normalizeCallback>
-) {
-  log('FAILURE_HANDLER', 'Start failure handler', transaction.id);
-
-  try {
-    await db.update(transactions)
-      .set({ status: 'failed' })
-      .where(eq(transactions.id, transaction.id));
-    log('FAILURE_DB', 'Transaction marked as failed', transaction.id);
-  } catch (err) {
-    logError('FAILURE_DB', 'Failed updating transaction status', err);
-  }
-
-  if (!transaction.ticketId) {
-    log('FAILURE_SKIP', 'No ticket linked', transaction.id);
-    return;
-  }
-
-  try {
-    await db.update(tickets)
-      .set({ paymentStatus: 'FAILED', status: 'CANCELLED' })
-      .where(eq(tickets.id, transaction.ticketId));
-    log('FAILURE_TICKET', 'Ticket cancelled', transaction.ticketId);
-  } catch (err) {
-    logError('FAILURE_TICKET', 'Ticket update failed', err);
-  }
-
-  try {
+    // 3. Update Session Counts
     const ticket = await db.query.tickets.findFirst({
-      where: eq(tickets.id, transaction.ticketId),
+        where: eq(tickets.id, transaction.ticketId),
     });
-
+    
     if (ticket) {
-      await SMSService.sendSMS(
-        ticket.purchaserPhone,
-        `Payment failed. Reason: ${cb.message || 'Unknown error'}`
-      );
-      log('FAILURE_SMS', 'Failure SMS sent', ticket.id);
+      try {
+        await updateSessionCountsAfterPurchase(
+          ticket.sessionId,
+          ticket.ticketType === 'ADULT' ? ticket.totalQuantity : 0,
+          ticket.ticketType === 'STUDENT' ? ticket.totalQuantity : 0,
+          ticket.ticketType === 'CHILD' ? ticket.totalQuantity : 0
+        );
+      } catch (e) {
+        console.error("Session count update failed:", e);
+      }
     }
-  } catch (err) {
-    logError('FAILURE_SMS', 'Failure SMS failed', err);
-  }
 }
 
-async function handlePending(transaction: any) {
-  log('PENDING_HANDLER', 'Marking transaction pending', transaction.id);
-  
-  try {
+async function handleFailure(transaction: any, raw: any) {
+    // 1. Update Transaction
     await db.update(transactions)
-      .set({ status: 'pending' })
+      .set({ status: 'failed', message: raw.message || 'Payment Failed', rawResponse: raw })
       .where(eq(transactions.id, transaction.id));
-    log('PENDING_DB', 'Transaction marked as pending', transaction.id);
-  } catch (err) {
-    logError('PENDING_DB', 'Failed updating pending transaction', err);
-  }
+
+    // 2. Update Ticket
+    if (transaction.ticketId) {
+      await db.update(tickets)
+        .set({ paymentStatus: 'FAILED', status: 'CANCELLED' })
+        .where(eq(tickets.id, transaction.ticketId));
+    }
+}
+
+async function handlePending(transaction: any, raw: any) {
+    // 1. Only update if the transaction was not already pending to avoid unnecessary DB write
+    if (transaction.status !== 'pending') {
+        await db.update(transactions)
+          .set({ status: 'pending', message: raw.message || 'Payment Pending', rawResponse: raw })
+          .where(eq(transactions.id, transaction.id));
+        
+        // Note: We don't change ticket status here, it remains 'PENDING_PAYMENT' or similar.
+    }
+}
+
+async function handleUnknown(transaction: any, raw: any) {
+    // 1. Update Transaction with unknown status details
+    await db.update(transactions)
+        .set({ status: 'unknown', message: raw.message || 'Unknown status received', rawResponse: raw })
+        .where(eq(transactions.id, transaction.id));
+    
+    // Note: Do not change ticket status or session counts on unknown status.
 }

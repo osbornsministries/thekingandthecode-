@@ -385,15 +385,15 @@ async function submitPayment(
       apiResponse.azampay_response?.success === true
     );
     
-    const status = isSuccess ? 'PENDING' : 'FAILED';
-    const errorMessage = status === 'FAILED'
-      ? apiResponse.message || apiResponse.error || `Payment submission failed with status ${response.status}`
-      : null;
+    const status =apiResponse.azampay_response?.success === true
+    ? "PENDING"
+    : "FAILED";
+    const errorMessage =  apiResponse.azampay_response?.message ?? apiResponse.message;
 
     // Determine IDs from API response or fallback
-    const finalExternalId = apiResponse.externalId || externalId;
-    const referenceId = apiResponse.reference || ticketCode;
-    const transId = apiResponse.transid || finalExternalId;
+    const finalExternalId = apiResponse.externalId;
+    const referenceId = apiResponse.reference ;
+    const transId = apiResponse.azampay_response?.transactionId ?? null;;
     const provider = apiResponse.provider || formData.paymentMethodId.toUpperCase();
 
     // Insert transaction into DB

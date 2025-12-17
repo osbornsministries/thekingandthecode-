@@ -4,6 +4,7 @@ import { seedDatabase } from "./ConfigSeeder";
 import { seedSchedule } from './ScheduleSeeder';
 import { seedTickets } from './TicketSeeder'; 
 import { seedUsers } from './UserSeeder'; 
+import { seedDefaultTemplates } from "./seed-sms-templates";
 
 async function main() {
   console.log('🚀 Starting Database Seed...');
@@ -19,9 +20,11 @@ async function main() {
     // 3. USERS: Admins/Staff (Independent)
     await seedUsers();
 
+    await seedDefaultTemplates();
+
     // 4. TICKETS: Logic includes creating Tickets + Transactions + Attendees
     // This now handles the entire "Purchase Flow" simulation
-    await seedTickets();
+    // await seedTickets();
     
     console.log('-----------------------------');
     console.log('✨ Database seeding completed successfully!');
