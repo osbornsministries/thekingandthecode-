@@ -88,12 +88,12 @@ export async function POST(req: Request) {
     }
 
     // 2. IDEMPOTENCY check (if already final, return success)
-    if (
+    // if (
         (rawData.transactionstatus?.toLowerCase() === 'success' && transaction.status === 'success') ||
         ((rawData.transactionstatus?.toLowerCase() === 'failure' || rawData.transactionstatus?.toLowerCase() === 'failed') && transaction.status === 'failed')
-    ) {
-        return NextResponse.json({ success: true, message: 'Already processed' });
-    }
+    // ) {
+    //     return NextResponse.json({ success: true, message: 'Already processed' });
+    // }
 
     // 3. NORMALIZE STATUS and call handler
     const azamStatus = rawData.transactionstatus?.toLowerCase();
