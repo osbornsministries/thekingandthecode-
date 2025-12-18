@@ -1,4 +1,5 @@
 // app/admin/tickets/page.tsx
+
 import AdminLayout from '@/components/admin/AdminLayout';
 import { db } from '@/lib/db/db';
 import { tickets, transactions, eventSessions, eventDays } from '@/lib/drizzle/schema';
@@ -6,6 +7,11 @@ import { desc, like, or, sql, eq, and } from 'drizzle-orm';
 import { Download, Eye, Edit, Trash2, Calendar, User, Phone, Tag, DollarSign, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Ticket, Clock, Database, CreditCard, X } from 'lucide-react';
 import Link from 'next/link';
 import AutoSearchForm from '@/components/admin/tickets/AutoSearchForm';
+import BulkActions from '@/components/admin/tickets/BulkActions';
+import BulkActionsWrapper from '@/components/admin/tickets/BulkActionsWrapper';
+import TicketsTable from '@/components/admin/tickets/TicketsTable';
+import TicketsTableComplete from '@/components/admin/tickets/TicketsTableComplete';
+import TicketsWithBulkActions from '@/components/admin/tickets/TicketsTableWithBulkActions';
 
 // Constants for pagination
 const ITEMS_PER_PAGE = 10;
@@ -29,7 +35,7 @@ export default async function TicketsPage({
   const sortBy = typeof params.sortBy === 'string' ? params.sortBy : 'createdAt';
   const sortOrder = typeof params.sortOrder === 'string' ? params.sortOrder : 'desc';
   const page = typeof params.page === 'string' ? Math.max(1, parseInt(params.page)) : 1;
-  
+
   // Calculate offset for pagination
   const offset = (page - 1) * ITEMS_PER_PAGE;
 
@@ -307,6 +313,9 @@ export default async function TicketsPage({
           </div> */}
         </div>
 
+        {/* Bulk Actions Component */}
+        <BulkActionsWrapper initialTickets={allTickets.map(t => t.ticket)} />
+
         {/* Search & Filter Card */}
         <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
           
@@ -314,90 +323,6 @@ export default async function TicketsPage({
           <div className="p-4 border-b border-gray-100">
             <div className="flex flex-col lg:flex-row gap-4">
               <AutoSearchForm />
-              
-              {/* <div className="flex flex-wrap gap-2">
-                <select 
-                  name="ticketType"
-                  defaultValue={ticketType}
-                  className="px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#A81010]/20 focus:border-[#A81010] min-w-[120px]"
-                >
-                  <option value="">All Types</option>
-                  <option value="VVIP">VVIP</option>
-                  <option value="VIP">VIP</option>
-                  <option value="REGULAR">Regular</option>
-                  <option value="ADULT">Adult</option>
-                  <option value="STUDENT">Student</option>
-                  <option value="CHILD">Child</option>
-                </select>
-                
-                <select 
-                  name="paymentStatus"
-                  defaultValue={paymentStatus}
-                  className="px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#A81010]/20 focus:border-[#A81010] min-w-[120px]"
-                >
-                  <option value="">All Status</option>
-                  <option value="PAID">Paid</option>
-                  <option value="PENDING">Pending</option>
-                  <option value="FAILED">Failed</option>
-                  <option value="UNPAID">Unpaid</option>
-                </select>
-
-                <select 
-                  name="provider"
-                  defaultValue={provider}
-                  className="px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#A81010]/20 focus:border-[#A81010] min-w-[120px]"
-                >
-                  <option value="">All Providers</option>
-                  {providers.map((p) => (
-                    <option key={p.provider} value={p.provider || ''}>
-                      {p.provider}
-                    </option>
-                  ))}
-                </select>
-
-                <select 
-                  name="session"
-                  defaultValue={sessionId}
-                  className="px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#A81010]/20 focus:border-[#A81010] min-w-[140px]"
-                >
-                  <option value="">All Sessions</option>
-                  {sessions.map((session) => (
-                    <option key={session.id} value={session.id}>
-                      {session.dayName} - {session.name}
-                    </option>
-                  ))}
-                </select>
-
-                <select 
-                  name="sortBy"
-                  defaultValue={sortBy}
-                  className="px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#A81010]/20 focus:border-[#A81010] min-w-[140px]"
-                >
-                  <option value="createdAt">Sort by Date</option>
-                  <option value="purchaserName">Sort by Name</option>
-                  <option value="totalAmount">Sort by Amount</option>
-                  <option value="day">Sort by Day</option>
-                </select>
-
-                <select 
-                  name="sortOrder"
-                  defaultValue={sortOrder}
-                  className="px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#A81010]/20 focus:border-[#A81010] min-w-[120px]"
-                >
-                  <option value="desc">Descending</option>
-                  <option value="asc">Ascending</option>
-                </select>
-
-                {hasAnySearch && (
-                  <Link
-                    href={clearAllSearch()}
-                    className="px-4 py-2.5 bg-gray-100 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-200 transition-colors duration-200 flex items-center justify-center"
-                  >
-                    <X size={16} className="mr-2" />
-                    Clear Search
-                  </Link>
-                )}
-              </div> */}
             </div>
           </div>
 
@@ -601,9 +526,18 @@ export default async function TicketsPage({
                     >
                       <Edit size={14} />
                     </Link>
-                    <button className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg">
-                      <Trash2 size={14} />
-                    </button>
+                    <form action={async () => {
+                      'use server';
+                      // Add delete action here
+                    }}>
+                      <button 
+                        type="submit"
+                        className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
+                        title="Delete ticket"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </form>
                   </div>
                 </div>
               </div>
@@ -634,175 +568,13 @@ export default async function TicketsPage({
 
           {/* Desktop Table View */}
           <div className="hidden lg:block">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm text-gray-600">
-                <thead className="bg-gray-50 text-xs uppercase font-bold text-gray-500 border-b border-gray-100">
-                  <tr>
-                    <th className="px-6 py-4">Ticket ID</th>
-                    <th className="px-6 py-4">Purchaser Details</th>
-                    <th className="px-6 py-4">Type</th>
-                    <th className="px-6 py-4">Session & Day</th>
-                    <th className="px-6 py-4">Amount</th>
-                    <th className="px-6 py-4">Payment Status</th>
-                    <th className="px-6 py-4">External ID</th>
-                    <th className="px-6 py-4">Provider</th>
-                    <th className="px-6 py-4">Tx Status</th>
-                    <th className="px-6 py-4">Date</th>
-                    <th className="px-6 py-4 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {allTickets.map(({ ticket, transaction, session, day }) => (
-                    <tr key={ticket.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-6 py-4 font-mono text-xs text-gray-400">
-                        #{ticket.id.toString().padStart(4, '0')}
-                      </td>
-                      <td className="px-6 py-4">
-                        <p className="font-bold text-gray-900">{ticket.purchaserName}</p>
-                        <p className="text-xs text-gray-400">{ticket.purchaserPhone}</p>
-                        <p className="text-xs text-gray-500 mt-1 font-mono">{ticket.ticketCode}</p>
-                      </td>
-                      <td className="px-6 py-4">
-                        <span className={`px-2.5 py-1 rounded-md text-xs font-bold border ${
-                          ticket.ticketType === 'VVIP' ? 'bg-purple-50 text-purple-700 border-purple-100' :
-                          ticket.ticketType === 'VIP' ? 'bg-amber-50 text-amber-700 border-amber-100' :
-                          'bg-blue-50 text-blue-700 border-blue-100'
-                        }`}>
-                          {ticket.ticketType}
-                        </span>
-                        <div className="text-xs text-gray-500 mt-1">
-                          Qty: {ticket.totalQuantity}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4">
-                        {session && day ? (
-                          <>
-                            <p className="font-medium text-gray-900">{session.name}</p>
-                            <div className="flex items-center gap-1 text-xs text-gray-500">
-                              <Calendar size={12} />
-                              <span>{new Date(day.date).toLocaleDateString()}</span>
-                            </div>
-                            <div className="flex items-center gap-1 text-xs text-gray-500">
-                              <Clock size={12} />
-                              <span>{session.startTime} - {session.endTime}</span>
-                            </div>
-                          </>
-                        ) : (
-                          <span className="text-gray-400">Not assigned</span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 font-medium text-gray-900">
-                        TZS {Number(ticket.totalAmount).toLocaleString()}
-                      </td>
-                      <td className="px-6 py-4">
-                        {ticket.paymentStatus === 'PAID' ? (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-green-50 text-green-700 border border-green-100">
-                            <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span> Paid
-                          </span>
-                        ) : ticket.paymentStatus === 'FAILED' ? (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-red-50 text-red-700 border border-red-100">
-                            Failed
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-yellow-50 text-yellow-700 border border-yellow-100">
-                            Pending
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4">
-                        {transaction?.externalId ? (
-                          <div className="font-mono text-xs text-gray-500 truncate max-w-[120px]" title={transaction.externalId}>
-                            {transaction.externalId}
-                          </div>
-                        ) : (
-                          <span className="text-gray-400">-</span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4">
-                        {transaction?.provider ? (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-700">
-                            <CreditCard size={12} />
-                            {transaction.provider}
-                          </span>
-                        ) : (
-                          <span className="text-gray-400">-</span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4">
-                        {transaction?.status ? (
-                          <span className={`text-xs px-2 py-1 rounded-md ${
-                            transaction.status === 'SUCCESS' ? 'bg-green-50 text-green-700' :
-                            transaction.status === 'FAILED' ? 'bg-red-50 text-red-700' :
-                            'bg-yellow-50 text-yellow-700'
-                          }`}>
-                            {transaction.status}
-                          </span>
-                        ) : (
-                          <span className="text-gray-400">-</span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="flex flex-col">
-                          <span>{ticket.createdAt ? new Date(ticket.createdAt).toLocaleDateString() : '-'}</span>
-                          <span className="text-xs text-gray-400">
-                            {ticket.createdAt ? new Date(ticket.createdAt).toLocaleTimeString() : ''}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <div className="flex justify-end gap-1">
-                          <Link 
-                            href={`/admin/tickets/${ticket.id}`}
-                            className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                            title="View ticket"
-                          >
-                            <Eye size={16} />
-                          </Link>
-                          <Link
-                            href={`/admin/tickets/${ticket.id}/edit`}
-                            className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-                            title="Edit ticket"
-                          >
-                            <Edit size={16} />
-                          </Link>
-                          <button 
-                            className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                            title="Delete ticket"
-                          >
-                            <Trash2 size={16} />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                  {allTickets.length === 0 && (
-                    <tr>
-                      <td colSpan={11} className="p-8 text-center text-gray-400">
-                        <div className="flex flex-col items-center justify-center">
-                          <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                            <X className="w-8 h-8 text-gray-400" />
-                          </div>
-                          <h3 className="text-lg font-bold text-gray-900 mb-2">No Tickets Found</h3>
-                          <p className="text-gray-500 mb-4">
-                            {hasAnySearch || hasAnyFilter 
-                              ? "Try adjusting your search or filters" 
-                              : "No tickets have been created yet"}
-                          </p>
-                          {!(hasAnySearch || hasAnyFilter) && (
-                            <Link
-                              href="/admin/tickets/create"
-                              className="inline-flex items-center gap-2 px-4 py-2 bg-[#A81010] text-white rounded-lg text-sm font-medium hover:bg-[#8a0d0d]"
-                            >
-                              <Edit size={16} /> Create Your First Ticket
-                            </Link>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+           <TicketsWithBulkActions
+              tickets={allTickets}
+              sessions={sessions}
+              hasAnySearch={hasAnySearch}
+              hasAnyFilter={hasAnyFilter}
+            />
+
           </div>
 
           {/* Pagination */}
@@ -884,6 +656,7 @@ export default async function TicketsPage({
                   <select 
                     className="bg-transparent border-none focus:outline-none text-gray-900 font-medium"
                     defaultValue={ITEMS_PER_PAGE}
+                    disabled
                   >
                     <option value="10">10</option>
                     <option value="25">25</option>
