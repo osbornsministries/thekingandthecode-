@@ -101,8 +101,8 @@ export async function scanTicketForAssignment(rawCode: string): Promise<{
     
     // Check if ticket can be assigned
     const canBeAssigned = (
-      ticket.status === 'ACTIVE' && 
-      ticket.paymentStatus === 'PAID' &&
+      // ticket.status === 'ACTIVE' && 
+      // ticket.paymentStatus === 'PAID' &&
       !ticket.isAssigned // You might want to add this field
     );
     
