@@ -4,6 +4,7 @@ import EditTicketForm from '@/components/admin/tickets/EditTicketForm';
 import { db } from '@/lib/db/db';
 import { tickets, eventSessions, eventDays, transactions } from '@/lib/drizzle/schema';
 import { eq } from 'drizzle-orm';
+import AdminLayout from '@/components/admin/AdminLayout';
 
 interface FormattedTicket {
   id: number;
@@ -176,12 +177,14 @@ export default async function EditTicketPage({
     } : null;
 
     return (
+      <AdminLayout>
       <EditTicketForm 
         initialData={formattedTicket}
         transaction={formattedTransaction}
         currentSession={formattedSession}
         sessions={allSessions} 
       />
+      </AdminLayout>
     );
   } catch (error) {
     console.error('Unexpected error in EditTicketPage:', error);

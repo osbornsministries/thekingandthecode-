@@ -8,8 +8,8 @@ import {
   tickets, transactions, adults, students, children, 
   eventSessions, eventDays, ticketPrices, paymentMethods
 } from '@/lib/drizzle/schema';
-import { eq, and, sql, like, or, inArray } from 'drizzle-orm';
-// import { smsLogs } from '@/lib/drizzle/schema';
+import { eq, and, sql, like, isNull, or, desc } from 'drizzle-orm';
+import { revalidatePath } from 'next/cache';
 
 // ----------------------------------------------------------------------
 // TYPES
@@ -33,6 +33,7 @@ export interface ImportTicketData {
   transactionId?: string;
   importedAt?: Date;
   notes?: string;
+  rowNumber?: number;
 }
 
 export interface ImportResult {
@@ -54,16 +55,16 @@ export interface ValidationResult {
   details?: any;
 }
 
-
-
 // ----------------------------------------------------------------------
 // HELPER FUNCTIONS
 // ----------------------------------------------------------------------
-function generateImportTicketCode(): string {
-  const prefix = 'IMP';
+function generateTicketCode(ticketType: string = 'IMP'): string {
+  const prefix = ticketType === 'ADULT' ? 'ADT' : 
+                 ticketType === 'STUDENT' ? 'STU' : 
+                 ticketType === 'CHILD' ? 'CHD' : 'IMP';
   const timestamp = Date.now().toString().slice(-6);
-  const random = Math.floor(100 + Math.random() * 900);
-  return `${prefix}${timestamp}${random}`;
+  const random = Math.floor(1000 + Math.random() * 9000);
+  return `${prefix}-${timestamp}${random}`;
 }
 
 // Helper to normalize phone numbers
@@ -88,15 +89,18 @@ function normalizePhoneNumber(phone: string): string {
     return cleaned;
   }
   
-  return phone; // Return original if can't normalize
+  return cleaned || phone; // Return cleaned if possible, otherwise original
 }
 
 // Helper to parse amounts with various formats
-function parseAmount(amount: string): number {
-  if (!amount || amount.trim() === '') return 0;
+function parseAmount(amount: string | number): number {
+  if (typeof amount === 'number') return amount;
+  
+  if (!amount || amount.toString().trim() === '') return 0;
   
   // Remove currency symbols, commas, slashes, equals, spaces
   const cleaned = amount
+    .toString()
     .replace(/[^\d.-]/g, '') // Keep only numbers, dots, and minus
     .replace(/,/g, '') // Remove commas
     .trim();
@@ -106,53 +110,40 @@ function parseAmount(amount: string): number {
 
 // Helper to map session names to session IDs
 async function getSessionIdByName(dayId: number, sessionName: string): Promise<number> {
+  if (!sessionName || sessionName.trim() === '') return 1;
+  
   const normalizedSession = sessionName.toLowerCase().trim();
-  
-  // Map common session names
-  const sessionMap: Record<string, string> = {
-    'night': 'Night',
-    'afternoon': 'Afternoon',
-    'evening': 'Evening',
-    'morning': 'Morning',
-    'evening ': 'Evening',
-    'afternoon ': 'Afternoon',
-    'night ': 'Night'
-  };
-  
-  const mappedName = sessionMap[normalizedSession] || sessionName;
   
   try {
     // Try to find session by name for the given day
-    const session = await db.select()
+    const sessions = await db.select()
       .from(eventSessions)
-      .where(
-        and(
-          eq(eventSessions.dayId, dayId),
-          like(sql`LOWER(${eventSessions.name})`, `%${normalizedSession}%`)
-        )
-      )
-      .then(rows => rows[0]);
+      .where(eq(eventSessions.dayId, dayId));
 
-    if (session) {
-      return session.id;
+    // Find session by name match
+    for (const session of sessions) {
+      if (session.name.toLowerCase().includes(normalizedSession) || 
+          normalizedSession.includes(session.name.toLowerCase())) {
+        return session.id;
+      }
     }
     
     // If not found, get the first session for the day
-    const firstSession = await db.select()
-      .from(eventSessions)
-      .where(eq(eventSessions.dayId, dayId))
-      .orderBy(eventSessions.id)
-      .limit(1)
-      .then(rows => rows[0]);
+    if (sessions.length > 0) {
+      return sessions[0].id;
+    }
     
-    return firstSession?.id || 1;
   } catch (error) {
-    return 1; // Default fallback
+    console.error('Error getting session ID:', error);
   }
+  
+  return 1; // Default fallback
 }
 
 // Helper to map ticket types to standard format
 function normalizeTicketType(ticketType: string): 'ADULT' | 'STUDENT' | 'CHILD' {
+  if (!ticketType) return 'ADULT';
+  
   const normalized = ticketType.toLowerCase().trim();
   
   if (normalized.includes('student')) return 'STUDENT';
@@ -173,6 +164,8 @@ function normalizeTicketType(ticketType: string): 'ADULT' | 'STUDENT' | 'CHILD' 
 
 // Helper to map payment methods
 function normalizePaymentMethod(paymentMethod: string): string {
+  if (!paymentMethod) return 'CASH';
+  
   const normalized = paymentMethod.toLowerCase().trim();
   
   const methodMap: Record<string, string> = {
@@ -189,916 +182,143 @@ function normalizePaymentMethod(paymentMethod: string): string {
   return methodMap[normalized] || 'CASH';
 }
 
-// Helper to get appropriate price ID based on ticket type and amount
-async function getPriceId(ticketType: string, amount: number, dayId: number): Promise<number> {
+// ----------------------------------------------------------------------
+// GET IMPORT HISTORY
+// ----------------------------------------------------------------------
+
+export async function getImportHistory(limit: number = 50) {
+  const logger = new Logger('import-history');
+  
   try {
-    // Find prices for the given day and ticket type
-    const prices = await db.select()
-      .from(ticketPrices)
+    // Try query with isImported column first
+    let importedTickets;
+    
+    try {
+      importedTickets = await db.select({
+        id: tickets.id,
+        ticketCode: tickets.ticketCode,
+        purchaserName: tickets.purchaserName,
+        purchaserPhone: tickets.purchaserPhone,
+        ticketType: tickets.ticketType,
+        totalAmount: tickets.totalAmount,
+        status: tickets.status,
+        paymentStatus: tickets.paymentStatus,
+        createdAt: tickets.createdAt,
+        isImported: tickets.isImported,
+        metadata: tickets.metadata
+      })
+      .from(tickets)
+      .where(eq(tickets.isImported, true))
+      .orderBy(desc(tickets.createdAt))
+      .limit(limit);
+      
+      logger.info('Retrieved import history using isImported column', { 
+        count: importedTickets.length 
+      });
+      
+    } catch (error) {
+      console.log('isImported column not found, searching by metadata');
+      
+      // Fallback: search in metadata for import indicators
+      importedTickets = await db.select({
+        id: tickets.id,
+        ticketCode: tickets.ticketCode,
+        purchaserName: tickets.purchaserName,
+        purchaserPhone: tickets.purchaserPhone,
+        ticketType: tickets.ticketType,
+        totalAmount: tickets.totalAmount,
+        status: tickets.status,
+        paymentStatus: tickets.paymentStatus,
+        createdAt: tickets.createdAt,
+        metadata: tickets.metadata
+      })
+      .from(tickets)
       .where(
-        and(
-          eq(ticketPrices.ticketType, ticketType),
-          eq(ticketPrices.dayId, dayId)
+        or(
+          sql`${tickets.metadata} LIKE '%"importSource":"csv"%'`,
+          sql`${tickets.metadata} LIKE '%"isImported":true%'`,
+          sql`${tickets.metadata} LIKE '%"importNotes":"Imported from CSV%"'`,
+          sql`${tickets.metadata} LIKE '%Imported from CSV%'`
         )
       )
-      .then(rows => rows);
-
-    if (prices.length === 0) {
-      // If no specific price found, use default
-      const defaultPrice = await db.select()
-        .from(ticketPrices)
-        .where(eq(ticketPrices.ticketType, ticketType))
-        .orderBy(ticketPrices.id)
-        .limit(1)
-        .then(rows => rows[0]);
+      .orderBy(desc(tickets.createdAt))
+      .limit(limit);
       
-      return defaultPrice?.id || 1;
+      logger.info('Retrieved import history using metadata search', { 
+        count: importedTickets.length 
+      });
     }
 
-    // Try to find matching price
-    const matchingPrice = prices.find(price => 
-      Math.abs(parseFloat(price.price) - amount) < 0.01
-    );
-
-    if (matchingPrice) {
-      return matchingPrice.id;
-    }
-
-    // Return the first price for this type
-    return prices[0].id;
-  } catch (error) {
-    return 1; // Default fallback
-  }
-}
-
-// ----------------------------------------------------------------------
-// CHECK USER EXISTS FUNCTION
-// ----------------------------------------------------------------------
-async function checkUserExists(phone: string, fullName: string): Promise<{
-  exists: boolean;
-  existingTickets: Array<{
-    id: number;
-    ticketCode: string;
-    sessionId: number;
-    ticketType: string;
-    status: string;
-    createdAt: Date;
-    sessionName?: string;
-    dayName?: string;
-  }>;
-}> {
-  const logger = new Logger('user-check');
-  
-  try {
-    // Normalize phone for comparison
-    const normalizedPhone = normalizePhoneNumber(phone);
-    
-    // Find existing tickets for this user (phone + name combination)
-    const existingTickets = await db.select({
-      id: tickets.id,
-      ticketCode: tickets.ticketCode,
-      sessionId: tickets.sessionId,
-      ticketType: tickets.ticketType,
-      status: tickets.status,
-      paymentStatus: tickets.paymentStatus,
-      createdAt: tickets.createdAt,
-      purchaserName: tickets.purchaserName,
-      purchaserPhone: tickets.purchaserPhone,
-      sessionName: eventSessions.name,
-      dayName: eventDays.name
-    })
-    .from(tickets)
-    .innerJoin(eventSessions, eq(tickets.sessionId, eventSessions.id))
-    .innerJoin(eventDays, eq(eventSessions.dayId, eventDays.id))
-    .where(
-      and(
-        eq(tickets.purchaserPhone, normalizedPhone),
-        sql`LOWER(${tickets.purchaserName}) = LOWER(${fullName})`
-      )
-    )
-    .orderBy(tickets.createdAt);
-
-    logger.info('User check completed', {
-      phone: normalizedPhone,
-      fullName,
-      foundTickets: existingTickets.length
-    });
-
-    return {
-      exists: existingTickets.length > 0,
-      existingTickets: existingTickets.map(ticket => ({
-        id: ticket.id,
-        ticketCode: ticket.ticketCode,
-        sessionId: ticket.sessionId,
-        ticketType: ticket.ticketType,
-        status: ticket.status,
-        createdAt: ticket.createdAt,
-        sessionName: ticket.sessionName,
-        dayName: ticket.dayName
-      }))
-    };
-    
-  } catch (error: any) {
-    logger.error('Error checking user existence', error);
-    return {
-      exists: false,
-      existingTickets: []
-    };
-  }
-}
-
-// ----------------------------------------------------------------------
-// VALIDATE IMPORT DATA
-// ----------------------------------------------------------------------
-async function validateImportData(importData: ImportTicketData): Promise<{
-  success: boolean;
-  error?: string;
-  validationResults: ValidationResult[];
-  data?: {
-    day: any;
-    session: any;
-    price: any;
-    paymentMethod: any;
-  };
-}> {
-  const logger = new Logger('import-validation');
-  const validationResults: ValidationResult[] = [];
-  
-  try {
-    logger.info('Starting import validation', { 
-      fullName: importData.fullName,
-      phone: importData.phone,
-      ticketType: importData.ticketType 
-    });
-
-    // 1. Validate Day
-    const day = await db.select()
-      .from(eventDays)
-      .where(eq(eventDays.id, importData.dayId))
-      .then(rows => rows[0]);
-
-    if (!day) {
-      logger.error('Day validation failed', { dayId: importData.dayId });
+    // Parse metadata for additional info
+    const parsedTickets = importedTickets.map(ticket => {
+      let metadata = null;
+      let isDuplicate = false;
+      let importSource = 'manual';
+      let importRow = null;
+      let importError = null;
+      let validationErrors = null;
+      
+      try {
+        if (ticket.metadata) {
+          metadata = JSON.parse(ticket.metadata);
+          isDuplicate = metadata?.isDuplicate || false;
+          importSource = metadata?.importSource || 'manual';
+          importRow = metadata?.importRow;
+          importError = metadata?.importError;
+          validationErrors = metadata?.validationErrors;
+        }
+      } catch (e) {
+        console.error('Error parsing metadata:', e);
+      }
+      
       return {
-        success: false,
-        error: 'Selected day not found',
-        validationResults: [{
-          passed: false,
-          step: 'DAY_VALIDATION',
-          message: 'Day not found',
-          details: { dayId: importData.dayId }
-        }]
+        ...ticket,
+        metadata,
+        isDuplicate,
+        importSource,
+        importRow,
+        importError,
+        validationErrors,
+        // Ensure isImported is true for these tickets
+        isImported: true
       };
-    }
-
-    // 2. Validate Session
-    const session = await db.select()
-      .from(eventSessions)
-      .where(and(
-        eq(eventSessions.id, importData.sessionId),
-        eq(eventSessions.dayId, importData.dayId)
-      ))
-      .then(rows => rows[0]);
-
-    if (!session) {
-      logger.error('Session validation failed', { 
-        sessionId: importData.sessionId, 
-        dayId: importData.dayId 
-      });
-      return {
-        success: false,
-        error: 'Selected session not found for this day',
-        validationResults: [{
-          passed: false,
-          step: 'SESSION_VALIDATION',
-          message: 'Session not found for selected day',
-          details: { sessionId: importData.sessionId, dayId: importData.dayId }
-        }]
-      };
-    }
-
-    // 3. Validate Ticket Price
-    const price = await db.select()
-      .from(ticketPrices)
-      .where(eq(ticketPrices.id, importData.priceId))
-      .then(rows => rows[0]);
-
-    if (!price) {
-      logger.error('Price validation failed', { priceId: importData.priceId });
-      // For imports, we can proceed with a default price
-      validationResults.push({
-        passed: true,
-        step: 'PRICE_VALIDATION',
-        message: 'Using default price',
-        details: { priceId: importData.priceId, note: 'Price not found, using default' }
-      });
-    } else {
-      validationResults.push({
-        passed: true,
-        step: 'PRICE_VALIDATION',
-        message: `Price: ${price.name} - TZS ${price.price}`,
-        details: price
-      });
-    }
-
-    // 4. Validate Payment Method
-    const paymentMethod = await db.select()
-      .from(paymentMethods)
-      .where(eq(paymentMethods.id, importData.paymentMethodId))
-      .then(rows => rows[0]);
-
-    if (!paymentMethod) {
-      logger.warn('Payment method not found, using CASH as default', { 
-        paymentMethodId: importData.paymentMethodId 
-      });
-      
-      // For imports, default to CASH if not found
-      importData.paymentMethodId = 'CASH';
-      
-      const cashMethod = await db.select()
-        .from(paymentMethods)
-        .where(eq(paymentMethods.id, 'CASH'))
-        .then(rows => rows[0]);
-      
-      if (cashMethod) {
-        validationResults.push({
-          passed: true,
-          step: 'PAYMENT_METHOD_VALIDATION',
-          message: `Payment Method: ${cashMethod.name} (defaulted from ${importData.paymentMethodId})`,
-          details: cashMethod
-        });
-      } else {
-        validationResults.push({
-          passed: true,
-          step: 'PAYMENT_METHOD_VALIDATION',
-          message: 'Payment method not found, proceeding with CASH',
-          details: { paymentMethodId: importData.paymentMethodId }
-        });
-      }
-    } else {
-      validationResults.push({
-        passed: true,
-        step: 'PAYMENT_METHOD_VALIDATION',
-        message: `Payment Method: ${paymentMethod.name}`,
-        details: paymentMethod
-      });
-    }
-
-    // 5. Validate student data if ticket type is STUDENT
-    if (importData.ticketType === 'STUDENT') {
-      if (!importData.studentId || !importData.studentId.trim()) {
-        // For imports, generate a student ID if not provided
-        importData.studentId = `STU-IMP-${Date.now().toString().slice(-6)}`;
-        validationResults.push({
-          passed: true,
-          step: 'STUDENT_VALIDATION',
-          message: 'Generated student ID',
-          details: { studentId: importData.studentId }
-        });
-      }
-      
-      if (!importData.institution) {
-        // Default to UNIVERSITY for student tickets
-        importData.institution = 'UNIVERSITY';
-        validationResults.push({
-          passed: true,
-          step: 'STUDENT_VALIDATION',
-          message: 'Default institution set to UNIVERSITY',
-          details: { institution: importData.institution }
-        });
-      }
-    }
-
-    // All validations passed
-    logger.info('Import validations passed successfully');
-    
-    validationResults.push(
-      {
-        passed: true,
-        step: 'DAY_VALIDATION',
-        message: `Day: ${day.name}`,
-        details: day
-      },
-      {
-        passed: true,
-        step: 'SESSION_VALIDATION',
-        message: `Session: ${session.name}`,
-        details: session
-      }
-    );
+    });
 
     return {
       success: true,
-      validationResults,
-      data: { day, session, price: price || { id: importData.priceId, name: 'Default', price: '0' }, paymentMethod: paymentMethod || { id: 'CASH', name: 'Cash' } }
+      tickets: parsedTickets,
+      count: parsedTickets.length
     };
 
   } catch (error: any) {
-    logger.critical('Import validation system error', error);
+    logger.error('Error getting import history', error);
+    console.error('Import history error:', error);
+    
+    // Ultimate fallback: return empty array
     return {
-      success: false,
-      error: `Validation error: ${error.message}`,
-      validationResults: [{
-        passed: false,
-        step: 'VALIDATION_ERROR',
-        message: 'System error during validation',
-        details: { error: error.message }
-      }]
+      success: true,
+      tickets: [],
+      count: 0,
+      error: error.message
     };
   }
 }
-
-// ----------------------------------------------------------------------
-// CREATE ATTENDEES FOR IMPORT
-// ----------------------------------------------------------------------
-async function createImportAttendees(
-  ticketId: number,
-  ticketCode: string,
-  importData: ImportTicketData,
-  validationResults: ValidationResult[]
-): Promise<void> {
-  const logger = new Logger('import-attendee-creation');
-  
-  const attendeeTable = importData.ticketType === 'ADULT' ? adults :
-                       importData.ticketType === 'STUDENT' ? students :
-                       importData.ticketType === 'CHILD' ? children : null;
-
-  if (!attendeeTable) {
-    logger.warn('No attendee table found for ticket type', { ticketType: importData.ticketType });
-    return;
-  }
-
-  try {
-    for (let i = 0; i < importData.quantity; i++) {
-      const attendeeData: any = {
-        ticketId: ticketId,
-        fullName: importData.quantity > 1 ? `${importData.fullName} ${i + 1}` : importData.fullName,
-        phoneNumber: importData.phone,
-        isImported: true,
-        importNotes: importData.notes || 'Imported via CSV'
-      };
-
-      // Add student-specific fields
-      if (importData.ticketType === 'STUDENT') {
-        attendeeData.studentId = importData.studentId || `STU-${ticketCode.slice(0, 8)}-${i + 1}`;
-        attendeeData.institutionType = importData.institution || 'UNKNOWN';
-        attendeeData.institutionName = importData.institution === 'OTHER' 
-          ? (importData.institutionName || 'Other Institution')
-          : importData.institution || 'Unknown Institution';
-      }
-
-      // Add child-specific fields
-      if (importData.ticketType === 'CHILD') {
-        attendeeData.parentName = importData.fullName;
-      }
-
-      await db.insert(attendeeTable).values(attendeeData);
-    }
-    
-    logger.info(`Created ${importData.quantity} attendee record(s) for import`, { 
-      ticketId, 
-      ticketType: importData.ticketType 
-    });
-    
-    validationResults.push({
-      passed: true,
-      step: 'ATTENDEE_CREATION',
-      message: `Created ${importData.quantity} attendee record(s)`,
-      details: { 
-        quantity: importData.quantity, 
-        type: importData.ticketType,
-        isImported: true,
-        ...(importData.ticketType === 'STUDENT' && {
-          studentId: importData.studentId,
-          institution: importData.institution
-        })
-      }
-    });
-    
-  } catch (error: any) {
-    logger.error('Error creating import attendees', error);
-    validationResults.push({
-      passed: false,
-      step: 'ATTENDEE_CREATION',
-      message: 'Failed to create attendee records',
-      details: { error: error.message }
-    });
-  }
-}
-
-// ----------------------------------------------------------------------
-// CREATE TRANSACTION FOR IMPORT
-// ----------------------------------------------------------------------
-async function createImportTransaction(
-  ticketId: number,
-  ticketCode: string,
-  importData: ImportTicketData,
-  validationResults: ValidationResult[]
-): Promise<void> {
-  const logger = new Logger('import-transaction');
-  
-  try {
-    // Generate external ID if not provided
-    const externalId = importData.externalId || `IMP-${Date.now()}-${ticketCode}`;
-    const transId = importData.transactionId || externalId;
-    
-    // Determine status for import
-    const paymentStatus = importData.isPaid ? 'PAID' : (importData.paymentStatus || 'PENDING');
-    
-    await db.insert(transactions).values({
-      ticketId,
-      externalId,
-      reference: ticketCode,
-      transId,
-      provider: importData.paymentMethodId.toUpperCase(),
-      accountNumber: importData.phone,
-      amount: importData.totalAmount.toString(),
-      status: paymentStatus,
-      currency: 'TZS',
-      message: `Imported ${importData.isPaid ? 'as paid' : 'as pending'}`,
-      metadata: JSON.stringify({
-        isImported: true,
-        importData: {
-          isPaid: importData.isPaid,
-          paymentStatus: importData.paymentStatus,
-          externalId: importData.externalId,
-          transactionId: importData.transactionId,
-          importedAt: new Date().toISOString(),
-          notes: importData.notes
-        },
-        importMethod: 'csv_import',
-        importTimestamp: new Date().toISOString()
-      })
-    });
-    
-    logger.info('Import transaction created', { 
-      ticketId, 
-      externalId,
-      status: paymentStatus 
-    });
-    
-    validationResults.push({
-      passed: true,
-      step: 'TRANSACTION_CREATION',
-      message: `Transaction created (${paymentStatus})`,
-      details: { 
-        externalId,
-        transactionId: transId,
-        status: paymentStatus,
-        isPaid: importData.isPaid
-      }
-    });
-    
-  } catch (error: any) {
-    logger.error('Error creating import transaction', error);
-    validationResults.push({
-      passed: false,
-      step: 'TRANSACTION_CREATION',
-      message: 'Failed to create transaction record',
-      details: { error: error.message }
-    });
-  }
-}
-
-// ----------------------------------------------------------------------
-// SEND IMPORT NOTIFICATION
-// ----------------------------------------------------------------------
-
-
-// ----------------------------------------------------------------------
-// SEND IMPORT NOTIFICATION WITH DATABASE SAVING
-// ----------------------------------------------------------------------
-async function sendImportNotification(
-  importData: ImportTicketData,
-  ticketCode: string,
-  day: any,
-  session: any,
-  isDuplicate: boolean = false,
-  validationResults: ValidationResult[],
-  ticketId?: number
-): Promise<void> {
-  const logger = new Logger('import-notification');
-  
-  try {
-    // Prepare different SMS messages for new users vs duplicates
-    let smsMessage = '';
-    let smsType = 'IMPORT_CONFIRMATION';
-    
-    if (isDuplicate) {
-      smsMessage = `Hello ${importData.fullName}!\n\n`;
-      smsMessage += `Additional ticket ${ticketCode} for ${day.name} - ${session.name} has been issued.\n`;
-      smsMessage += `Quantity: ${importData.quantity}\n`;
-      smsMessage += `Amount: TZS ${importData.totalAmount.toLocaleString()}\n\n`;
-      smsMessage += `Status: ${importData.isPaid ? 'PAID ✓' : 'PENDING PAYMENT'}\n`;
-      
-      if (importData.isPaid) {
-        smsMessage += `This ticket is now active and valid for entry.`;
-      } else {
-        smsMessage += `Please complete your payment to activate this ticket.`;
-      }
-      
-      smsMessage += `\n\nNote: This is an additional ticket to your existing booking.`;
-      smsType = 'DUPLICATE_IMPORT_CONFIRMATION';
-      
-    } else {
-      // NEW USER - More detailed welcome message
-      smsMessage = `Dear ${importData.fullName},\n\n`;
-      smsMessage += `WELCOME TO THE KING & THE CODE EVENT!\n\n`;
-      smsMessage += `We have received and confirmed your ticket:\n`;
-      smsMessage += `🎟 Ticket Code: ${ticketCode}\n`;
-      smsMessage += `📅 Day: ${day.name}\n`;
-      smsMessage += `⏰ Session: ${session.name} (${session.startTime} - ${session.endTime})\n`;
-      smsMessage += `👥 Quantity: ${importData.quantity} ${importData.ticketType.toLowerCase()} ticket(s)\n`;
-      smsMessage += `💰 Amount: TZS ${importData.totalAmount.toLocaleString()}\n\n`;
-      
-    //   if (importData.isPaid) {
-    //     smsMessage += `✅ STATUS: PAID & CONFIRMED\n`;
-    //     smsMessage += `Your ticket is now active and ready for use!\n\n`;
-    //     smsMessage += `Please present this ticket code at the entrance.`;
-    //   } else {
-    //     smsMessage += `⏳ STATUS: PENDING PAYMENT\n`;
-    //     smsMessage += `To activate your ticket, please complete the payment.\n\n`;
-    //     smsMessage += `Payment Method: ${importData.paymentMethodId}\n`;
-    //     smsMessage += `Reference: ${ticketCode}`;
-    //   }
-      
-    //   smsMessage += `\n\nWe look forward to seeing you at the event!\n`;
-    //   smsMessage += `For any queries, contact our support team.`;
-      smsType = 'NEW_USER_WELCOME';
-    }
-     smsMessage = `For any queries, contact our support team.`;
-    
-    // Send SMS
-    const smsResult = await SMSService.sendSMS(importData.phone, smsMessage);
-    
-    // Save SMS log to database
-    // try {
-    //   await db.insert(smsLogs).values({
-    //     phoneNumber: importData.phone,
-    //     message: smsMessage,
-    //     messageType: smsType,
-    //     status: smsResult.success ? 'SENT' : 'FAILED',
-    //     ticketId: ticketId,
-    //     metadata: JSON.stringify({
-    //       ticketCode,
-    //       purchaserName: importData.fullName,
-    //       isDuplicate,
-    //       isPaid: importData.isPaid,
-    //       paymentStatus: importData.paymentStatus,
-    //       quantity: importData.quantity,
-    //       amount: importData.totalAmount,
-    //       day: day.name,
-    //       session: session.name,
-    //       importTimestamp: new Date().toISOString(),
-    //       ...(smsResult.error && { error: smsResult.error }),
-    //       ...(smsResult.provider && { provider: smsResult.provider }),
-    //       ...(smsResult.messageId && { messageId: smsResult.messageId })
-    //     }),
-    //     createdAt: new Date(),
-    //     updatedAt: new Date()
-    //   });
-      
-    //   logger.info('SMS log saved to database', { 
-    //     ticketId,
-    //     smsType,
-    //     saved: true 
-    //   });
-      
-    // } catch (smsLogError: any) {
-    //   logger.error('Failed to save SMS log to database', smsLogError);
-    //   // Don't fail the whole import if SMS log fails
-    // }
-    
-    if (smsResult.success) {
-      logger.info('Import SMS notification sent successfully', { 
-        recipient: importData.phone,
-        isNewUser: !isDuplicate,
-        isPaid: importData.isPaid,
-        smsType
-      });
-    } else {
-      logger.error('Failed to send import SMS notification', { 
-        recipient: importData.phone,
-        message : smsMessage,
-        error: smsResult.error 
-      });
-    }
-    
-    validationResults.push({
-      passed: smsResult.success,
-      step: 'NOTIFICATION',
-      message: smsResult.success 
-        ? `SMS sent successfully to ${isDuplicate ? 'existing' : 'new'} user` 
-        : 'Failed to send SMS',
-      details: { 
-        recipient: importData.phone,
-        isNewUser: !isDuplicate,
-        isPaid: importData.isPaid,
-        smsType,
-        ...(smsResult.error && { error: smsResult.error }),
-        ...(smsResult.messageId && { messageId: smsResult.messageId })
-      }
-    });
-    
-  } catch (smsError: any) {
-    logger.error('Error in import notification process', smsError);
-    validationResults.push({
-      passed: false,
-      step: 'NOTIFICATION',
-      message: 'Failed to send notification',
-      details: { error: smsError.message }
-    });
-  }
-}
-
-// ----------------------------------------------------------------------
-// MAIN ACTION: Import Ticket
-// ----------------------------------------------------------------------
-export async function importTicket(importData: ImportTicketData): Promise<ImportResult> {
-  const logger = new Logger('ticket-import');
-  const validationResults: ValidationResult[] = [];
-  let isDuplicate = false;
-  let originalTicketId: number | undefined;
-  let originalTicketCode: string | undefined;
-
-  try {
-    logger.info(`Starting ticket import for ${importData.fullName}`, { 
-      phone: importData.phone,
-      amount: importData.totalAmount,
-      ticketType: importData.ticketType
-    });
-
-    // Normalize phone number
-    importData.phone = normalizePhoneNumber(importData.phone);
-
-    // ---------------------------------------------------------
-    // STEP 1: CHECK IF USER EXISTS
-    // ---------------------------------------------------------
-    const userCheck = await checkUserExists(importData.phone, importData.fullName);
-    
-    if (userCheck.exists) {
-      isDuplicate = true;
-      const latestTicket = userCheck.existingTickets[userCheck.existingTickets.length - 1];
-      originalTicketId = latestTicket.id;
-      originalTicketCode = latestTicket.ticketCode;
-      
-      logger.info('User already has existing tickets', {
-        phone: importData.phone,
-        fullName: importData.fullName,
-        existingTicketsCount: userCheck.existingTickets.length,
-        latestTicket: latestTicket.ticketCode
-      });
-      
-      validationResults.push({
-        passed: true,
-        step: 'USER_CHECK',
-        message: `User already has ${userCheck.existingTickets.length} ticket(s)`,
-        details: {
-          isDuplicate: true,
-          existingTickets: userCheck.existingTickets,
-          latestTicket: latestTicket
-        }
-      });
-    } else {
-      logger.info('No existing tickets found for user', {
-        phone: importData.phone,
-        fullName: importData.fullName
-      });
-      
-      validationResults.push({
-        passed: true,
-        step: 'USER_CHECK',
-        message: 'New user - no existing tickets found',
-        details: { isDuplicate: false }
-      });
-    }
-
-    // ---------------------------------------------------------
-    // STEP 2: VALIDATE IMPORT DATA
-    // ---------------------------------------------------------
-    const validation = await validateImportData(importData);
-    if (!validation.success) {
-      logger.error('Import validation failed', validation.validationResults);
-      return {
-        success: false,
-        message: validation.error || 'Validation failed',
-        validationResults: validation.validationResults,
-        isDuplicate,
-        ...(isDuplicate && { originalTicketId, originalTicketCode })
-      };
-    }
-
-    validationResults.push(...validation.validationResults);
-    logger.info('Import validation passed', validation.validationResults);
-
-    const { day, session, price, paymentMethod } = validation.data!;
-
-    // ---------------------------------------------------------
-    // STEP 3: CREATE TICKET RECORD
-    // ---------------------------------------------------------
-    const ticketCode = generateImportTicketCode();
-    const status = importData.isPaid ? 'ACTIVE' : 'PENDING';
-    const paymentStatus = importData.isPaid ? 'PAID' : (importData.paymentStatus || 'PENDING');
-
-    logger.info('Creating import ticket record...', { 
-      ticketCode,
-      status,
-      paymentStatus
-    });
-    
-    // Insert the ticket
-    await db.insert(tickets).values({
-      sessionId: importData.sessionId,
-      ticketCode: ticketCode,
-      purchaserName: importData.fullName,
-      purchaserPhone: importData.phone,
-      ticketType: importData.ticketType,
-      totalAmount: importData.totalAmount.toString(),
-      status: status,
-      paymentStatus: paymentStatus,
-      paymentMethodId: importData.paymentMethodId,
-      isImported: true,
-      metadata: JSON.stringify({
-        studentId: importData.studentId,
-        institution: importData.institution,
-        institutionName: importData.institutionName,
-        dayName: day.name,
-        sessionName: session.name,
-        isPaid: importData.isPaid,
-        paymentStatus: paymentStatus,
-        externalId: importData.externalId,
-        transactionId: importData.transactionId,
-        importedAt: new Date().toISOString(),
-        importNotes: importData.notes,
-        isDuplicate: isDuplicate,
-        originalTicketId: originalTicketId,
-        originalTicketCode: originalTicketCode,
-        existingTicketsCount: userCheck.existingTickets.length,
-        importSource: 'csv'
-      })
-    });
-
-    // Query for the ticket we just inserted
-    const insertedTicket = await db.select()
-      .from(tickets)
-      .where(eq(tickets.ticketCode, ticketCode))
-      .limit(1)
-      .then(rows => rows[0]);
-
-    if (!insertedTicket || !insertedTicket.id) {
-      throw new Error('Could not retrieve ticket after creation');
-    }
-
-    const ticketId = insertedTicket.id;
-    
-    logger.info('Import ticket record created', { 
-      ticketId, 
-      ticketCode,
-      isDuplicate,
-      existingTickets: userCheck.existingTickets.length
-    });
-    
-    validationResults.push({
-      passed: true,
-      step: 'TICKET_CREATION',
-      message: `Ticket created successfully ${isDuplicate ? '(Duplicate)' : ''}`,
-      details: { 
-        ticketId, 
-        ticketCode,
-        status,
-        paymentStatus,
-        isDuplicate,
-        ...(isDuplicate && {
-          existingTicketsCount: userCheck.existingTickets.length,
-          originalTicketId,
-          originalTicketCode
-        })
-      }
-    });
-
-    // ---------------------------------------------------------
-    // STEP 4: CREATE ATTENDEES
-    // ---------------------------------------------------------
-    await createImportAttendees(ticketId, ticketCode, importData, validationResults);
-
-    // ---------------------------------------------------------
-    // STEP 5: CREATE TRANSACTION RECORD
-    // ---------------------------------------------------------
-    await createImportTransaction(ticketId, ticketCode, importData, validationResults);
-
-    // ---------------------------------------------------------
-    // STEP 6: SEND NOTIFICATION
-    // ---------------------------------------------------------
-   await sendImportNotification(
-  importData, 
-  ticketCode, 
-  day, 
-  session, 
-  isDuplicate, 
-  validationResults,
-  ticketId  
-);
-
- // ---------------------------------------------------------
-    // FINAL RESPONSE
-    // ---------------------------------------------------------
-    const finalResult: ImportResult = {
-    success: true,
-    message: isDuplicate 
-        ? `Ticket imported successfully. ${userCheck.existingTickets.length + 1} total tickets for this user.`
-        : `Ticket imported successfully. Welcome message sent to new user.`,
-    ticketId,
-    ticketCode,
-    isDuplicate,
-    ...(isDuplicate && { originalTicketId, originalTicketCode }),
-    validationResults,
-    summary: {
-        purchaser: importData.fullName,
-        phone: importData.phone,
-        event: `${day.name} - ${session.name}`,
-        date: day.date ? new Date(day.date).toLocaleDateString() : 'N/A',
-        time: `${session.startTime} - ${session.endTime}`,
-        ticketType: importData.ticketType,
-        ...(importData.ticketType === 'STUDENT' && {
-        studentId: importData.studentId,
-        institution: importData.institution,
-        institutionName: importData.institutionName
-        }),
-        quantity: importData.quantity,
-        amount: importData.totalAmount,
-        paymentMethod: importData.paymentMethodId,
-        paymentMethodName: paymentMethod.name,
-        paymentStatus: paymentStatus,
-        ticketStatus: status,
-        isPaid: importData.isPaid,
-        isImported: true,
-        isDuplicate: isDuplicate,
-        ...(isDuplicate && {
-        existingTicketsCount: userCheck.existingTickets.length,
-        originalTicketId,
-        originalTicketCode
-        }),
-        notes: importData.notes || 'No additional notes',
-        externalId: importData.externalId,
-        transactionId: importData.transactionId,
-        importTimestamp: new Date().toISOString(),
-        notificationSent: true, // Add this flag
-        notificationType: isDuplicate ? 'duplicate_confirmation' : 'new_user_welcome', // Add this
-        nextSteps: importData.isPaid 
-        ? [
-            'Ticket is active and ready for use',
-            'Confirmation SMS sent to user',
-            'Present ticket code at entrance'
-            ]
-        : [
-            'Complete payment to activate ticket',
-            'Payment reminder sent to user',
-            'Contact support for payment assistance'
-            ],
-        supportInfo: {
-        ticketCode: ticketCode,
-        contactPhone: '255XXXXXXXXX', // Add your support number
-        email: 'support@event.com',
-        hours: '9AM - 6PM'
-        }
-    }
-    };
-
-    logger.info('Ticket import process completed', finalResult.summary);
-
-    return finalResult;
-
-        logger.info('Ticket import process completed', finalResult.summary);
-        
-        return finalResult;
-
-    } catch (error: any) {
-        logger.critical('Critical error in importTicket', error);
-        
-        validationResults.push({
-        passed: false,
-        step: 'SYSTEM_ERROR',
-        message: 'System error occurred during import',
-        details: { error: error.message, stack: error.stack }
-        });
-
-        return {
-        success: false,
-        message: `Import failed: ${error.message}`,
-        isDuplicate,
-        ...(isDuplicate && { originalTicketId, originalTicketCode }),
-        validationResults
-        };
-    }
-    }
-
 // ----------------------------------------------------------------------
 // BULK IMPORT ACTION (For CSV imports)
 // ----------------------------------------------------------------------
 export async function bulkImportTickets(ticketsData: ImportTicketData[]): Promise<{
   success: boolean;
   message: string;
-  results: Array<ImportResult & { index: number }>;
+  results: Array<{
+    success: boolean;
+    data?: ImportTicketData;
+    error?: string;
+    row?: number;
+    validationErrors?: Record<string, string>;
+    ticketCode?: string;
+    ticketId?: number;
+    isDuplicate?: boolean;
+  }>;
   summary: {
     total: number;
     successful: number;
@@ -1110,7 +330,16 @@ export async function bulkImportTickets(ticketsData: ImportTicketData[]): Promis
   };
 }> {
   const logger = new Logger('bulk-import');
-  const results: Array<ImportResult & { index: number }> = [];
+  const results: Array<{
+    success: boolean;
+    data?: ImportTicketData;
+    error?: string;
+    row?: number;
+    validationErrors?: Record<string, string>;
+    ticketCode?: string;
+    ticketId?: number;
+    isDuplicate?: boolean;
+  }> = [];
   
   try {
     logger.info('Starting bulk import', { 
@@ -1124,77 +353,273 @@ export async function bulkImportTickets(ticketsData: ImportTicketData[]): Promis
     let totalAmount = 0;
     let totalQuantity = 0;
 
-    // Process tickets sequentially to avoid overwhelming the database
+    // Process tickets sequentially
     for (let i = 0; i < ticketsData.length; i++) {
       const ticketData = ticketsData[i];
+      const rowNumber = i + 1;
       
-      logger.info(`Processing ticket ${i + 1} of ${ticketsData.length}`, {
-        index: i,
+      logger.info(`Processing ticket ${rowNumber} of ${ticketsData.length}`, {
+        rowNumber,
         fullName: ticketData.fullName,
         phone: ticketData.phone
       });
 
       try {
-        // Get appropriate session ID if not provided
-        if (!ticketData.sessionId) {
-          ticketData.sessionId = await getSessionIdByName(ticketData.dayId, 'Night');
-        }
-
-        // Get appropriate price ID if not provided
-        if (!ticketData.priceId || ticketData.priceId === 1) {
-          ticketData.priceId = await getPriceId(ticketData.ticketType, ticketData.totalAmount, ticketData.dayId);
-        }
-
-        const result = await importTicket(ticketData);
-        const resultWithIndex = {
-          ...result,
-          index: i + 1
-        };
+        // Validate required fields
+        const validationErrors: Record<string, string> = {};
         
-        results.push(resultWithIndex);
+        if (!ticketData.fullName || ticketData.fullName.trim() === '') {
+          validationErrors['fullName'] = 'Full name is required';
+        }
         
-        if (result.success) {
-          successful++;
-          totalAmount += ticketData.totalAmount;
-          totalQuantity += ticketData.quantity;
-          
-          if (result.isDuplicate) {
-            duplicates++;
-          } else {
-            newUsers++;
-          }
-          
-          logger.info(`Ticket ${i + 1} imported successfully`, {
-            success: true,
-            isDuplicate: result.isDuplicate,
-            ticketCode: result.ticketCode
-          });
+        if (!ticketData.phone || ticketData.phone.trim() === '') {
+          validationErrors['phone'] = 'Phone number is required';
         } else {
-          failed++;
-          logger.error(`Ticket ${i + 1} import failed`, {
-            success: false,
-            message: result.message
-          });
+          // Validate phone format
+          const normalizedPhone = normalizePhoneNumber(ticketData.phone);
+          const phoneRegex = /^255\d{9}$/;
+          if (!phoneRegex.test(normalizedPhone)) {
+            validationErrors['phone'] = `Invalid phone format: ${ticketData.phone}. Use: 255712345678 or 0712345678`;
+          } else {
+            ticketData.phone = normalizedPhone;
+          }
         }
         
+        if (!ticketData.ticketType) {
+          validationErrors['ticketType'] = 'Ticket type is required';
+        }
+        
+        if (ticketData.totalAmount <= 0) {
+          validationErrors['totalAmount'] = 'Total amount must be greater than 0';
+        }
+        
+        if (Object.keys(validationErrors).length > 0) {
+          failed++;
+          results.push({
+            success: false,
+            data: ticketData,
+            error: 'Validation failed',
+            row: rowNumber,
+            validationErrors
+          });
+          continue;
+        }
+
+        // Check for duplicates
+        let isDuplicate = false;
+        let duplicateError = '';
+        
+        try {
+          const existingTicket = await db.select()
+            .from(tickets)
+            .where(
+              and(
+                eq(tickets.purchaserPhone, ticketData.phone),
+                eq(tickets.purchaserName, ticketData.fullName),
+                eq(tickets.ticketType, ticketData.ticketType)
+              )
+            )
+            .limit(1)
+            .then(rows => rows[0]);
+
+          if (existingTicket) {
+            isDuplicate = true;
+            duplicates++;
+            duplicateError = `Duplicate ticket found for ${ticketData.fullName} (${ticketData.phone})`;
+          }
+        } catch (dbError) {
+          console.error('Error checking duplicate:', dbError);
+        }
+
+        // Get or generate missing fields
+        if (!ticketData.sessionId || ticketData.sessionId < 1) {
+          ticketData.sessionId = 1;
+        }
+        
+        if (!ticketData.dayId || ticketData.dayId < 1) {
+          ticketData.dayId = 1;
+        }
+        
+        if (!ticketData.priceId || ticketData.priceId < 1) {
+          ticketData.priceId = 1;
+        }
+        
+        if (!ticketData.paymentMethodId) {
+          ticketData.paymentMethodId = 'CASH';
+        }
+        
+        if (!ticketData.quantity || ticketData.quantity < 1) {
+          ticketData.quantity = 1;
+        }
+        
+        if (!ticketData.paymentStatus) {
+          ticketData.paymentStatus = ticketData.isPaid ? 'PAID' : 'PENDING';
+        }
+
+        // Generate ticket code
+        const ticketCode = generateTicketCode(ticketData.ticketType);
+        const status = ticketData.isPaid ? 'PAID' : 'PENDING';
+        
+        // Insert ticket
+        const [insertResult] = await db.insert(tickets).values({
+          ticketCode,
+          purchaserName: ticketData.fullName,
+          purchaserPhone: ticketData.phone,
+          ticketType: ticketData.ticketType,
+          totalAmount: ticketData.totalAmount.toString(),
+          status,
+          paymentStatus: ticketData.paymentStatus,
+          paymentMethodId: ticketData.paymentMethodId,
+          sessionId: ticketData.sessionId,
+          dayId: ticketData.dayId,
+          quantity: ticketData.quantity,
+          isImported: true,
+          metadata: JSON.stringify({
+            studentId: ticketData.studentId,
+            institution: ticketData.institution,
+            institutionName: ticketData.institutionName,
+            isPaid: ticketData.isPaid,
+            paymentStatus: ticketData.paymentStatus,
+            externalId: ticketData.externalId,
+            transactionId: ticketData.transactionId,
+            importedAt: new Date().toISOString(),
+            importNotes: ticketData.notes,
+            isDuplicate,
+            importSource: 'csv',
+            importRow: rowNumber,
+            validationErrors: validationErrors
+          })
+        });
+
+        // Get the inserted ticket ID
+        const ticketId = insertResult.insertId;
+
+        // Create transaction if paid
+        if (ticketData.isPaid) {
+          try {
+            await db.insert(transactions).values({
+              ticketId: ticketId,
+              externalId: ticketData.externalId || `IMP-${Date.now()}-${ticketCode}`,
+              reference: ticketCode,
+              transId: ticketData.transactionId || `TXN-IMP-${Date.now()}`,
+              provider: ticketData.paymentMethodId,
+              accountNumber: ticketData.phone,
+              amount: ticketData.totalAmount.toString(),
+              status: 'SUCCESS',
+              currency: 'TZS',
+              message: `Imported ${ticketData.isPaid ? 'as paid' : 'as pending'}`,
+              metadata: JSON.stringify({
+                isImported: true,
+                importData: ticketData,
+                importTimestamp: new Date().toISOString()
+              })
+            });
+          } catch (txnError) {
+            console.error('Error creating transaction:', txnError);
+          }
+        }
+
+        // Create attendee records
+        try {
+          const attendeeTable = ticketData.ticketType === 'ADULT' ? adults :
+                               ticketData.ticketType === 'STUDENT' ? students :
+                               ticketData.ticketType === 'CHILD' ? children : null;
+
+          if (attendeeTable) {
+            for (let i = 0; i < ticketData.quantity; i++) {
+              const attendeeData: any = {
+                ticketId: ticketId,
+                fullName: ticketData.quantity > 1 ? 
+                  `${ticketData.fullName} ${i + 1}` : 
+                  ticketData.fullName,
+                phoneNumber: ticketData.phone,
+                isImported: true,
+                importNotes: ticketData.notes || 'Imported via CSV'
+              };
+
+              if (ticketData.ticketType === 'STUDENT') {
+                attendeeData.studentId = ticketData.studentId || `STU-${ticketCode.slice(0, 8)}-${i + 1}`;
+                attendeeData.institutionType = ticketData.institution || 'UNKNOWN';
+                attendeeData.institutionName = ticketData.institutionName || ticketData.institution || 'Unknown';
+              }
+
+              if (ticketData.ticketType === 'CHILD') {
+                attendeeData.parentName = ticketData.fullName;
+              }
+
+              await db.insert(attendeeTable).values(attendeeData);
+            }
+          }
+        } catch (attendeeError) {
+          console.error('Error creating attendee records:', attendeeError);
+        }
+
+        // Send SMS notification (optional)
+       // Send SMS notification (optional) - Updated message format
+        if (ticketData.isPaid) {
+          try {
+            // Get day and session names
+            const dayName = `Day ${ticketData.dayId || 1}`;
+            const sessionName = ticketData.sessionId === 1 ? 'Night' : 
+                              ticketData.sessionId === 2 ? 'Afternoon' :
+                              ticketData.sessionId === 3 ? 'Evening' :
+                              ticketData.sessionId === 4 ? 'Morning' : 'Session';
+            
+            const smsMessage = `Hello ${ticketData.fullName}! Your transaction for ${dayName} - ${sessionName} has been successful. Your ticket code is ${ticketCode}. Amount: TZS ${ticketData.totalAmount.toLocaleString()}`;
+            
+            await SMSService.sendSMS(ticketData.phone, smsMessage);
+            
+            // Optional: Log SMS sent
+            logger.info(`SMS sent to ${ticketData.phone}`, {
+              phone: ticketData.phone,
+              ticketCode,
+              day: dayName,
+              session: sessionName
+            });
+            
+          } catch (smsError) {
+            console.error('Error sending SMS:', smsError);
+            logger.error('Failed to send SMS', { 
+              phone: ticketData.phone, 
+              error: smsError.message 
+            });
+          }
+        }
+
+        successful++;
+        newUsers++;
+        totalAmount += ticketData.totalAmount;
+        totalQuantity += ticketData.quantity;
+
+        results.push({
+          success: true,
+          data: ticketData,
+          row: rowNumber,
+          ticketCode,
+          ticketId,
+          isDuplicate
+        });
+
+        logger.info(`Ticket ${rowNumber} imported successfully`, {
+          success: true,
+          isDuplicate,
+          ticketCode
+        });
+
       } catch (ticketError: any) {
         failed++;
-        logger.error(`Error processing ticket ${i + 1}`, ticketError);
+        logger.error(`Error processing ticket ${rowNumber}`, ticketError);
         
         results.push({
           success: false,
-          message: `Failed to import ticket: ${ticketError.message}`,
-          index: i + 1,
-          validationResults: [{
-            passed: false,
-            step: 'PROCESSING_ERROR',
-            message: 'Error during processing',
-            details: { error: ticketError.message }
-          }]
+          data: ticketData,
+          error: `Failed to import ticket: ${ticketError.message}`,
+          row: rowNumber,
+          validationErrors: {}
         });
       }
 
-      // Small delay between imports to avoid overwhelming the system
+      // Small delay between imports
       if (i < ticketsData.length - 1) {
         await new Promise(resolve => setTimeout(resolve, 50));
       }
@@ -1211,6 +636,9 @@ export async function bulkImportTickets(ticketsData: ImportTicketData[]): Promis
     };
 
     logger.info('Bulk import completed', summary);
+    
+    // Revalidate the import page
+    revalidatePath('/admin/tickets/import-ticket');
     
     return {
       success: failed === 0,
@@ -1231,14 +659,14 @@ export async function bulkImportTickets(ticketsData: ImportTicketData[]): Promis
       summary: {
         total: ticketsData.length,
         successful: results.filter(r => r.success).length,
-        failed: ticketsData.length - results.filter(r => r.success).length,
-        duplicates: results.filter(r => r.success && r.isDuplicate).length,
+        failed: results.filter(r => !r.success).length,
+        duplicates: results.filter(r => r.isDuplicate).length,
         newUsers: results.filter(r => r.success && !r.isDuplicate).length,
         totalAmount: results.reduce((sum, r) => 
-          r.success ? sum + ticketsData[r.index - 1].totalAmount : sum, 0
+          r.success && r.data ? sum + r.data.totalAmount : sum, 0
         ),
         totalQuantity: results.reduce((sum, r) => 
-          r.success ? sum + ticketsData[r.index - 1].quantity : sum, 0
+          r.success && r.data ? sum + (r.data.quantity || 1) : sum, 0
         )
       }
     };
@@ -1246,63 +674,46 @@ export async function bulkImportTickets(ticketsData: ImportTicketData[]): Promis
 }
 
 // ----------------------------------------------------------------------
-// GET IMPORT HISTORY
+// SINGLE IMPORT TICKET (Legacy function)
 // ----------------------------------------------------------------------
-export async function getImportHistory(limit: number = 50) {
-  const logger = new Logger('import-history');
+export async function importTicket(importData: ImportTicketData): Promise<ImportResult> {
+  const logger = new Logger('single-import');
   
   try {
-    const importedTickets = await db.select({
-      id: tickets.id,
-      ticketCode: tickets.ticketCode,
-      purchaserName: tickets.purchaserName,
-      purchaserPhone: tickets.purchaserPhone,
-      ticketType: tickets.ticketType,
-      totalAmount: tickets.totalAmount,
-      status: tickets.status,
-      paymentStatus: tickets.paymentStatus,
-      createdAt: tickets.createdAt,
-      sessionName: eventSessions.name,
-      dayName: eventDays.name,
-      isImported: tickets.isImported,
-      metadata: tickets.metadata
-    })
-    .from(tickets)
-    .innerJoin(eventSessions, eq(tickets.sessionId, eventSessions.id))
-    .innerJoin(eventDays, eq(eventSessions.dayId, eventDays.id))
-    .where(eq(tickets.isImported, true))
-    .orderBy(tickets.createdAt)
-    .limit(limit);
-
-    logger.info('Retrieved import history', { count: importedTickets.length });
-
-    // Parse metadata for additional info
-    const parsedTickets = importedTickets.map(ticket => ({
-      ...ticket,
-      metadata: ticket.metadata ? JSON.parse(ticket.metadata) : null,
-      isDuplicate: ticket.metadata ? JSON.parse(ticket.metadata).isDuplicate || false : false,
-      importSource: ticket.metadata ? JSON.parse(ticket.metadata).importSource || 'manual' : 'manual'
-    }));
-
-    return {
-      success: true,
-      tickets: parsedTickets,
-      count: parsedTickets.length
-    };
-
-  } catch (error: any) {
-    logger.error('Error getting import history', error);
+    // Use bulk import with single item
+    const bulkResult = await bulkImportTickets([importData]);
+    
+    if (bulkResult.results.length > 0) {
+      const result = bulkResult.results[0];
+      return {
+        success: result.success,
+        message: result.success ? 'Ticket imported successfully' : result.error || 'Import failed',
+        ticketId: result.ticketId,
+        ticketCode: result.ticketCode,
+        isDuplicate: result.isDuplicate,
+        summary: {
+          ...importData,
+          success: result.success
+        }
+      };
+    }
+    
     return {
       success: false,
-      error: error.message,
-      tickets: [],
-      count: 0
+      message: 'No result returned from import'
+    };
+    
+  } catch (error: any) {
+    logger.critical('Error in importTicket', error);
+    return {
+      success: false,
+      message: `Import failed: ${error.message}`
     };
   }
 }
 
 // ----------------------------------------------------------------------
-// NEW: PARSE CSV DATA FROM YOUR FORMAT
+// PARSE CSV DATA
 // ----------------------------------------------------------------------
 export async function parseTicketListCSV(csvData: string): Promise<{
   success: boolean;
@@ -1315,7 +726,6 @@ export async function parseTicketListCSV(csvData: string): Promise<{
     skippedRows: number;
   };
 }> {
-  const logger = new Logger('csv-parser');
   const tickets: ImportTicketData[] = [];
   const errors: string[] = [];
   
@@ -1332,7 +742,7 @@ export async function parseTicketListCSV(csvData: string): Promise<{
       const line = lines[i].trim();
       
       // Skip empty lines
-      if (!line || line === ',,' || line.startsWith(',,,,')) {
+      if (!line || line === '') {
         skippedRows++;
         continue;
       }
@@ -1340,24 +750,23 @@ export async function parseTicketListCSV(csvData: string): Promise<{
       const parts = line.split(',').map(part => part.trim());
       
       // Skip rows without essential data
-      if (parts.length < 8 || !parts[1] || parts[1] === '') {
+      if (parts.length < 2 || !parts[1] || parts[1] === '') {
         skippedRows++;
         continue;
       }
 
       try {
-        // Parse data from CSV format
-        const serialNumber = parts[0] || '';
-        const fullName = parts[1] || '';
-        const phone = parts[2] || '';
-        const paymentMethodRaw = parts[3] || 'CASH';
-        const dayRaw = parts[4] || '1';
-        const sessionRaw = parts[5] || 'Night';
-        const ticketTypeRaw = parts[6] || 'Adult';
-        const quantityRaw = parts[7] || '1';
-        const pricePerTicketRaw = parts[8] || '0';
-        const totalRaw = parts[9] || '0';
-        const statusRaw = parts[10] || 'TAKEN';
+        // Parse data from your CSV format
+        const fullName = parts[1] || ''; // FULL NAME column
+        const phone = parts[2] || ''; // PHONE column
+        const paymentMethodRaw = parts[3] || 'CASH'; // PAYMENT METHOD column
+        const dayRaw = parts[4] || '1'; // DAY column
+        const sessionRaw = parts[5] || 'Night'; // SESSION column
+        const ticketTypeRaw = parts[6] || 'Adult'; // TICKET TYPE column
+        const quantityRaw = parts[7] || '1'; // CAPACITY NUMBER column
+        const pricePerTicketRaw = parts[8] || '0'; // PRICE PER TICKET column
+        const totalRaw = parts[9] || '0'; // TOTAL column
+        const statusRaw = parts[10] || 'TAKEN'; // STATUS column
 
         // Validate required fields
         if (!fullName) {
@@ -1386,37 +795,31 @@ export async function parseTicketListCSV(csvData: string): Promise<{
         // Get session ID
         const sessionId = await getSessionIdByName(dayId, sessionRaw);
         
-        // Get price ID
-        const priceId = await getPriceId(normalizedTicketType, pricePerTicket, dayId);
-        
         // Determine payment status
         const isPaid = statusRaw.toUpperCase() === 'TAKEN';
-        const paymentStatus: 'PAID' | 'PENDING' | 'FAILED' = isPaid ? 'PAID' : 'PENDING';
-
-        // Generate student ID if needed
-        let studentId: string | undefined = undefined;
-        if (normalizedTicketType === 'STUDENT') {
-          studentId = `STU-${Date.now().toString().slice(-6)}-${Math.floor(100 + Math.random() * 900)}`;
-        }
+        const paymentStatus: 'PAID' | 'PENDING' = isPaid ? 'PAID' : 'PENDING';
 
         // Create ticket data
         const ticketData: ImportTicketData = {
           dayId,
           sessionId,
-          priceId,
+          priceId: 1, // Default price ID
           quantity,
           paymentMethodId: normalizedPaymentMethod,
           fullName,
           phone: normalizedPhone,
           totalAmount,
           ticketType: normalizedTicketType,
-          studentId,
+          studentId: normalizedTicketType === 'STUDENT' ? 
+            `STU-${Date.now().toString().slice(-6)}-${Math.floor(100 + Math.random() * 900)}` : 
+            undefined,
           institution: normalizedTicketType === 'STUDENT' ? 'UNIVERSITY' : undefined,
           institutionName: normalizedTicketType === 'STUDENT' ? 'University' : undefined,
           isPaid,
           paymentStatus,
           externalId: `CSV-IMP-${Date.now()}-${i}`,
-          notes: `Imported from CSV - Row ${i + 1}`
+          notes: `Imported from CSV - Row ${i + 1}`,
+          rowNumber: i + 1
         };
 
         tickets.push(ticketData);
@@ -1435,7 +838,7 @@ export async function parseTicketListCSV(csvData: string): Promise<{
       skippedRows
     };
 
-    logger.info('CSV parsing completed', stats);
+    console.log('CSV parsing completed', stats);
     
     return {
       success: validRows > 0,
@@ -1445,7 +848,7 @@ export async function parseTicketListCSV(csvData: string): Promise<{
     };
 
   } catch (error: any) {
-    logger.error('Error parsing CSV data', error);
+    console.error('Error parsing CSV data', error);
     return {
       success: false,
       tickets: [],

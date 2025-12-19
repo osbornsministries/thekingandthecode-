@@ -10,6 +10,7 @@ import {
   Tag, Building, FileText, MessageSquare, Trash2, Copy, Check,
   ChevronLeft, ChevronRight, RefreshCw
 } from 'lucide-react';
+import { SMSService } from '@/lib/services/sms'
 
 interface TicketFormData {
   id: number;
@@ -176,54 +177,92 @@ export default function EditTicketForm({
   };
 
   // Transaction form submission
-  const handleTransactionSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSaving(true);
-    
-    try {
-      if (!ticketForm.id) {
-        addToast('Ticket ID is required', 'error');
-        return;
-      }
-
-      const url = transactionForm.id 
-        ? `/api/admin/transactions/${transactionForm.id}`
-        : `/api/admin/transactions`;
-      
-      const method = transactionForm.id ? 'PUT' : 'POST';
-      
-      const response = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...transactionForm,
-          ticketId: ticketForm.id,
-          amount: transactionForm.amount ? parseFloat(transactionForm.amount) : null,
-        }),
-      });
-      
-      const data = await response.json();
-      
-      if (response.ok) {
-        if (data.id) {
-          setTransactionForm(prev => ({ ...prev, id: data.id }));
-        }
-        addToast(
-          transactionForm.id ? 'Transaction updated successfully!' : 'Transaction created successfully!',
-          'success'
-        );
-        router.refresh();
-      } else {
-        addToast(data.error || 'Failed to save transaction', 'error');
-      }
-    } catch (error) {
-      console.error('Error saving transaction:', error);
-      addToast('An error occurred while saving the transaction', 'error');
-    } finally {
-      setSaving(false);
+// Transaction form submission with complete SMS message
+const handleTransactionSubmit = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setSaving(true);
+  
+  try {
+    if (!ticketForm.id) {
+      addToast('Ticket ID is required', 'error');
+      return;
     }
-  };
 
+    const url = transactionForm.id 
+      ? `/api/admin/transactions/${transactionForm.id}`
+      : `/api/admin/transactions`;
+    
+    const method = transactionForm.id ? 'PUT' : 'POST';
+    
+    const response = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...transactionForm,
+        ticketId: ticketForm.id,
+        amount: transactionForm.amount ? parseFloat(transactionForm.amount) : null,
+      }),
+    });
+    
+    const data = await response.json();
+    
+    if (response.ok) {
+      if (data.id) {
+        setTransactionForm(prev => ({ ...prev, id: data.id }));
+      }
+      addToast(
+        transactionForm.id ? 'Transaction updated successfully!' : 'Transaction created successfully!',
+        'success'
+      );
+      
+      // Get session details for SMS message
+      const sessionDetails = currentSession 
+        ? {
+            dayName: currentSession.dayName,
+            sessionName: currentSession.name,
+            time: `${currentSession.startTime} - ${currentSession.endTime}`
+          }
+        : { dayName: 'Event Day', sessionName: 'Selected Session', time: '' };
+      
+      // Send SMS when transaction is SUCCESS or PAID
+      if (transactionForm.status === 'SUCCESS' || transactionForm.status === 'PAID') {
+        try {
+          const smsMessage = `Hello ${ticketForm.purchaserName}! Your transaction for ${sessionDetails.dayName} - ${sessionDetails.sessionName} has been successful. Your ticket code is ${ticketForm.ticketCode}. Amount: TZS ${parseFloat(transactionForm.amount || ticketForm.totalAmount || '0').toLocaleString()}. Transaction ID: ${transactionForm.transId || transactionForm.externalId || ticketForm.ticketCode}`;
+          
+          await SMSService.sendSMS(ticketForm.purchaserPhone, smsMessage);
+          
+          addToast(`Payment confirmation SMS sent to ${ticketForm.purchaserName}`, 'success');
+          
+        } catch (smsError) {
+          console.error('Failed to send SMS:', smsError);
+          addToast('Payment confirmed but failed to send SMS notification', 'warning');
+        }
+      }
+      // Send SMS for FAILED transactions
+      else if (transactionForm.status === 'FAILED') {
+        try {
+          const smsMessage = `Hello ${ticketForm.purchaserName}! Your payment for ${sessionDetails.dayName} - ${sessionDetails.sessionName} has failed. Ticket code: ${ticketForm.ticketCode}. Amount: TZS ${parseFloat(transactionForm.amount || ticketForm.totalAmount || '0').toLocaleString()}. Please try again or contact support.`;
+          
+          await SMSService.sendSMS(ticketForm.purchaserPhone, smsMessage);
+          
+          addToast(`Payment failure SMS sent to ${ticketForm.purchaserName}`, 'info');
+          
+        } catch (smsError) {
+          console.error('Failed to send SMS:', smsError);
+        }
+      }
+      
+      router.refresh();
+    } else {
+      addToast(data.error || 'Failed to save transaction', 'error');
+    }
+  } catch (error) {
+    console.error('Error saving transaction:', error);
+    addToast('An error occurred while saving the transaction', 'error');
+  } finally {
+    setSaving(false);
+  }
+};
   // Session update
   const handleSessionUpdate = async () => {
     setSaving(true);
@@ -702,6 +741,7 @@ export default function EditTicketForm({
                     <option value="STRIPE">Stripe</option>
                     <option value="PAYPAL">PayPal</option>
                     <option value="MPESA">M-Pesa</option>
+                    <option value="halopesa">Halopesa</option>
                     <option value="TIGO_PESA">Tigo Pesa</option>
                     <option value="AIRTEL_MONEY">Airtel Money</option>
                     <option value="BANK">Bank Transfer</option>

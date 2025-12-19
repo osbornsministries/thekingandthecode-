@@ -1,15 +1,19 @@
-// components/admin/ticket/import/BulkImport.tsx
+// components/admin/tickets/import-tickets/ImportHistory.tsx
 'use client';
 
-import { useState } from 'react';
-import { ImportTicketData } from '@/lib/actions/ticket/ticket-importer';
 import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/textarea';
-import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Loader2, Copy, Check, AlertCircle } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
+import { Loader2, RefreshCw, Search, Filter, Download, Eye, AlertCircle } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import {
   Select,
   SelectContent,
@@ -17,394 +21,370 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { useState } from 'react';
+import ImportErrorDetailsModal from './ImportErrorDetailsModal';
 
-interface BulkImportProps {
-  onSubmit: (data: ImportTicketData[]) => Promise<void>;
+interface ImportHistoryProps {
+  history: any[];
   isLoading: boolean;
+  onRefresh: () => Promise<void>;
 }
 
-export function BulkImport({ onSubmit, isLoading }: BulkImportProps) {
-  const [inputText, setInputText] = useState('');
-  const [parsedTickets, setParsedTickets] = useState<ImportTicketData[]>([]);
-  const [parseError, setParseError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-  const [dayId, setDayId] = useState<string>('1');
-  const [sessionId, setSessionId] = useState<string>('1');
-  const [priceId, setPriceId] = useState<string>('1');
+interface ImportErrorDetails {
+  row?: number;
+  error?: string;
+  validationErrors?: Record<string, string>;
+  originalData?: any;
+}
 
-  // Mock data - in production, fetch from API
-  const days = [
-    { id: 1, name: 'Day 1: January 15, 2024' },
-    { id: 2, name: 'Day 2: January 16, 2024' },
-    { id: 3, name: 'Day 3: January 17, 2024' }
-  ];
+export function ImportHistory({ history, isLoading, onRefresh }: ImportHistoryProps) {
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [showErrorDetails, setShowErrorDetails] = useState(false);
+  const [selectedError, setSelectedError] = useState<ImportErrorDetails | null>(null);
 
-  const sessions = [
-    { id: 1, dayId: 1, name: 'Morning Session (9:00 - 12:00)' },
-    { id: 2, dayId: 1, name: 'Afternoon Session (14:00 - 17:00)' },
-    { id: 3, dayId: 1, name: 'Evening Session (18:00 - 21:00)' },
-    { id: 4, dayId: 2, name: 'Morning Session (9:00 - 12:00)' },
-    { id: 5, dayId: 2, name: 'Afternoon Session (14:00 - 17:00)' }
-  ];
+  const filteredHistory = history.filter(ticket => {
+    const matchesSearch = 
+      (ticket.purchaserName?.toLowerCase().includes(search.toLowerCase()) || false) ||
+      (ticket.purchaserPhone?.includes(search) || false) ||
+      (ticket.ticketCode?.toLowerCase().includes(search.toLowerCase()) || false);
+    
+    const matchesStatus = statusFilter === 'all' || ticket.paymentStatus === statusFilter;
+    const matchesType = typeFilter === 'all' || ticket.ticketType === typeFilter;
+    
+    return matchesSearch && matchesStatus && matchesType;
+  });
 
-  const prices = [
-    { id: 1, name: 'Adult Regular', price: 10000, ticketType: 'ADULT' },
-    { id: 2, name: 'Student Regular', price: 5000, ticketType: 'STUDENT' },
-    { id: 3, name: 'Child Regular', price: 3000, ticketType: 'CHILD' },
-    { id: 4, name: 'Adult VIP', price: 20000, ticketType: 'ADULT' },
-    { id: 5, name: 'Student VIP', price: 10000, ticketType: 'STUDENT' }
-  ];
-
-  const sampleData = `John Doe,255712345678,ADULT,15000,true,PAID,MPESA,REF123,TRX456,STU001,UNIVERSITY,University of Dar es Salaam,"First year student"
-Jane Smith,255765432109,STUDENT,5000,true,PAID,AIRTEL,REF124,TRX457,STU002,COLLEGE,"Arusha Technical College",""
-Mike Johnson,255788765432,CHILD,3000,false,PENDING,CASH,,,,,"Child under 12"
-Sarah Wilson,255711223344,ADULT,10000,true,PAID,TIGO,REF125,TRX458,,,,"Group booking"`;
-
-  const formatData = `Format: fullName,phone,ticketType,totalAmount,isPaid,paymentStatus,paymentMethodId,externalId,transactionId,studentId,institution,institutionName,notes
-
-Example:
-John Doe,255712345678,ADULT,15000,true,PAID,MPESA,REF123,TRX456,,,,"Attending with family"`;
-
-  const parseBulkData = () => {
+  const formatDate = (dateString: string | Date) => {
     try {
-      const lines = inputText.trim().split('\n');
-      const tickets: ImportTicketData[] = [];
-      const errors: string[] = [];
-
-      lines.forEach((line, index) => {
-        const trimmedLine = line.trim();
-        if (!trimmedLine || trimmedLine.startsWith('//') || trimmedLine.startsWith('#')) {
-          return; // Skip empty lines and comments
-        }
-
-        // Parse CSV line with proper quote handling
-        const parts: string[] = [];
-        let currentPart = '';
-        let insideQuotes = false;
-        
-        for (let i = 0; i < trimmedLine.length; i++) {
-          const char = trimmedLine[i];
-          const nextChar = trimmedLine[i + 1];
-          
-          if (char === '"' && !insideQuotes) {
-            insideQuotes = true;
-          } else if (char === '"' && insideQuotes && nextChar === '"') {
-            // Escaped quote
-            currentPart += '"';
-            i++; // Skip next quote
-          } else if (char === '"' && insideQuotes) {
-            insideQuotes = false;
-          } else if (char === ',' && !insideQuotes) {
-            parts.push(currentPart.trim());
-            currentPart = '';
-          } else {
-            currentPart += char;
-          }
-        }
-        parts.push(currentPart.trim());
-
-        // Clean up quotes
-        const cleanedParts = parts.map(part => 
-          part.startsWith('"') && part.endsWith('"') ? part.slice(1, -1) : part
-        );
-        
-        if (cleanedParts.length < 7) {
-          errors.push(`Line ${index + 1}: Insufficient data (${cleanedParts.length} fields, need at least 7)`);
-          return;
-        }
-
-        const ticket: ImportTicketData = {
-          fullName: cleanedParts[0],
-          phone: cleanedParts[1],
-          ticketType: cleanedParts[2] as 'ADULT' | 'STUDENT' | 'CHILD',
-          dayId: parseInt(dayId),
-          sessionId: parseInt(sessionId),
-          priceId: parseInt(priceId),
-          totalAmount: parseFloat(cleanedParts[3]) || 0,
-          isPaid: cleanedParts[4].toLowerCase() === 'true',
-          paymentStatus: (cleanedParts[5] as 'PAID' | 'PENDING' | 'FAILED') || 'PENDING',
-          paymentMethodId: cleanedParts[6] || 'CASH',
-          externalId: cleanedParts[7] || undefined,
-          transactionId: cleanedParts[8] || undefined,
-          studentId: cleanedParts[9] || undefined,
-          institution: cleanedParts[10] as any,
-          institutionName: cleanedParts[11] || undefined,
-          notes: cleanedParts[12] || undefined,
-          quantity: 1
-        };
-
-        // Validate required fields
-        if (!ticket.fullName) errors.push(`Line ${index + 1}: Full name is required`);
-        if (!ticket.phone) errors.push(`Line ${index + 1}: Phone number is required`);
-        
-        if (ticket.ticketType === 'STUDENT') {
-          if (!ticket.studentId) errors.push(`Line ${index + 1}: Student ID is required for student tickets`);
-          if (!ticket.institution) errors.push(`Line ${index + 1}: Institution is required for student tickets`);
-        }
-
-        tickets.push(ticket);
+      const date = new Date(dateString);
+      return date.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
       });
-
-      if (errors.length > 0) {
-        setParseError(errors.join('\n'));
-        setParsedTickets([]);
-      } else {
-        setParseError(null);
-        setParsedTickets(tickets);
-      }
-    } catch (error) {
-      setParseError(`Parse error: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      setParsedTickets([]);
+    } catch {
+      return 'Invalid date';
     }
   };
 
-  const handleSubmit = async () => {
-    if (parsedTickets.length === 0) {
-      setParseError('No valid tickets to import');
-      return;
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case 'PAID':
+        return <Badge className="bg-green-100 text-green-800 hover:bg-green-100">PAID</Badge>;
+      case 'PENDING':
+        return <Badge className="bg-yellow-100 text-yellow-800 hover:bg-yellow-100">PENDING</Badge>;
+      case 'FAILED':
+        return <Badge className="bg-red-100 text-red-800 hover:bg-red-100">FAILED</Badge>;
+      case 'IMPORT_FAILED':
+        return <Badge className="bg-red-100 text-red-800 hover:bg-red-100">IMPORT FAILED</Badge>;
+      default:
+        return <Badge variant="outline">{status}</Badge>;
     }
-    await onSubmit(parsedTickets);
   };
 
-  const copySampleData = () => {
-    navigator.clipboard.writeText(sampleData);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const getTypeBadge = (type: string) => {
+    switch (type) {
+      case 'ADULT':
+        return <Badge variant="outline" className="border-blue-200 text-blue-700">ADULT</Badge>;
+      case 'STUDENT':
+        return <Badge variant="outline" className="border-purple-200 text-purple-700">STUDENT</Badge>;
+      case 'CHILD':
+        return <Badge variant="outline" className="border-green-200 text-green-700">CHILD</Badge>;
+      default:
+        return <Badge variant="outline">{type}</Badge>;
+    }
   };
+
+  const viewErrorDetails = (ticket: any) => {
+    if (ticket.importError || ticket.validationErrors) {
+      setSelectedError({
+        row: ticket.importRow,
+        error: ticket.importError,
+        validationErrors: ticket.validationErrors,
+        originalData: ticket.originalData
+      });
+      setShowErrorDetails(true);
+    }
+  };
+
+  const handleExportHistory = () => {
+    const headers = [
+      'Ticket Code',
+      'Name',
+      'Phone',
+      'Type',
+      'Amount',
+      'Status',
+      'Imported At',
+      'Duplicate',
+      'Import Error',
+      'Validation Errors'
+    ];
+    
+    const rows = history.map(ticket => [
+      ticket.ticketCode || '',
+      ticket.purchaserName || '',
+      ticket.purchaserPhone || '',
+      ticket.ticketType || '',
+      ticket.totalAmount || '0',
+      ticket.paymentStatus || '',
+      formatDate(ticket.createdAt),
+      ticket.isDuplicate ? 'Yes' : 'No',
+      ticket.importError || '',
+      ticket.validationErrors ? JSON.stringify(ticket.validationErrors) : ''
+    ]);
+    
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(row => row.map(cell => `"${cell}"`).join(','))
+    ].join('\n');
+    
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `import-history-${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+    window.URL.revokeObjectURL(url);
+  };
+
+  const totalFailed = history.filter(t => t.importError || t.validationErrors).length;
+  const totalDuplicates = history.filter(t => t.isDuplicate).length;
+  const totalSuccess = history.filter(t => !t.importError && !t.isDuplicate && !t.validationErrors).length;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <Card>
         <CardHeader>
-          <CardTitle>Bulk Ticket Import</CardTitle>
-          <CardDescription>
-            Import multiple tickets using comma-separated values. Each line represents one ticket.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <Alert>
-            <AlertCircle className="h-4 w-4" />
-            <AlertDescription>
-              The system will automatically detect duplicate users and mark them accordingly.
-            </AlertDescription>
-          </Alert>
-
-          {/* Global Settings */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="space-y-2">
-              <Label>Event Day</Label>
-              <Select value={dayId} onValueChange={setDayId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select day" />
-                </SelectTrigger>
-                <SelectContent>
-                  {days.map(day => (
-                    <SelectItem key={day.id} value={day.id.toString()}>
-                      {day.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <CardTitle>Import History</CardTitle>
+              <CardDescription>
+                View all imported tickets and their status
+              </CardDescription>
             </div>
-
-            <div className="space-y-2">
-              <Label>Session</Label>
-              <Select value={sessionId} onValueChange={setSessionId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select session" />
-                </SelectTrigger>
-                <SelectContent>
-                  {sessions
-                    .filter(s => s.dayId === parseInt(dayId))
-                    .map(session => (
-                      <SelectItem key={session.id} value={session.id.toString()}>
-                        {session.name}
-                      </SelectItem>
-                    ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Default Price</Label>
-              <Select value={priceId} onValueChange={setPriceId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select price" />
-                </SelectTrigger>
-                <SelectContent>
-                  {prices.map(price => (
-                    <SelectItem key={price.id} value={price.id.toString()}>
-                      {price.name} - TZS {price.price.toLocaleString()}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="bulkData">Ticket Data (CSV Format)</Label>
+            <div className="flex gap-2">
               <Button
-                type="button"
                 variant="outline"
                 size="sm"
-                onClick={copySampleData}
+                onClick={handleExportHistory}
                 className="gap-2"
               >
-                {copied ? (
-                  <Check className="h-3 w-3" />
+                <Download className="h-4 w-4" />
+                Export
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onRefresh}
+                disabled={isLoading}
+                className="gap-2"
+              >
+                {isLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
-                  <Copy className="h-3 w-3" />
+                  <RefreshCw className="h-4 w-4" />
                 )}
-                {copied ? 'Copied!' : 'Copy Sample'}
+                Refresh
               </Button>
             </div>
-            <Textarea
-              id="bulkData"
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              placeholder={formatData}
-              rows={10}
-              className="font-mono text-sm"
-            />
           </div>
-
-          <div className="flex gap-2">
-            <Button
-              type="button"
-              onClick={parseBulkData}
-              variant="outline"
-              className="flex-1"
-            >
-              Parse Data
-            </Button>
-            <Button
-              type="button"
-              onClick={handleSubmit}
-              disabled={isLoading || parsedTickets.length === 0}
-              className="flex-1"
-            >
-              {isLoading ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Importing...
-                </>
-              ) : (
-                `Import ${parsedTickets.length} Ticket${parsedTickets.length !== 1 ? 's' : ''}`
-              )}
-            </Button>
-          </div>
-
-          {parseError && (
-            <Alert variant="destructive">
-              <AlertDescription className="font-mono text-sm whitespace-pre-wrap">
-                {parseError}
-              </AlertDescription>
-            </Alert>
-          )}
-
-          {parsedTickets.length > 0 && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <h4 className="font-semibold">
-                  Parsed Tickets ({parsedTickets.length})
-                </h4>
-                <Badge variant="outline">
-                  Ready for Import
-                </Badge>
-              </div>
-              
-              <div className="border rounded-lg overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="bg-muted">
-                      <tr>
-                        <th className="px-4 py-2 text-left">Name</th>
-                        <th className="px-4 py-2 text-left">Phone</th>
-                        <th className="px-4 py-2 text-left">Type</th>
-                        <th className="px-4 py-2 text-left">Amount</th>
-                        <th className="px-4 py-2 text-left">Status</th>
-                        <th className="px-4 py-2 text-left">Payment</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {parsedTickets.slice(0, 5).map((ticket, index) => (
-                        <tr key={index} className="border-t hover:bg-muted/50">
-                          <td className="px-4 py-2 font-medium">{ticket.fullName}</td>
-                          <td className="px-4 py-2">{ticket.phone}</td>
-                          <td className="px-4 py-2">
-                            <Badge 
-                              variant="outline" 
-                              className={`text-xs ${
-                                ticket.ticketType === 'ADULT' ? 'border-blue-200 text-blue-700' :
-                                ticket.ticketType === 'STUDENT' ? 'border-purple-200 text-purple-700' :
-                                'border-green-200 text-green-700'
-                              }`}
-                            >
-                              {ticket.ticketType}
-                            </Badge>
-                          </td>
-                          <td className="px-4 py-2">
-                            TZS {ticket.totalAmount.toLocaleString()}
-                          </td>
-                          <td className="px-4 py-2">
-                            <Badge 
-                              variant={ticket.isPaid ? "default" : "secondary"}
-                              className={`text-xs ${
-                                ticket.isPaid ? 'bg-green-100 text-green-800 hover:bg-green-100' :
-                                'bg-yellow-100 text-yellow-800 hover:bg-yellow-100'
-                              }`}
-                            >
-                              {ticket.paymentStatus}
-                            </Badge>
-                          </td>
-                          <td className="px-4 py-2">
-                            <span className="text-xs text-muted-foreground">
-                              {ticket.paymentMethodId}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                
-                {parsedTickets.length > 5 && (
-                  <div className="px-4 py-2 bg-muted text-center text-sm">
-                    ... and {parsedTickets.length - 5} more tickets
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            {/* Summary Stats */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <Card className="bg-green-50 border-green-200">
+                <CardContent className="pt-6">
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-green-700">{totalSuccess}</div>
+                    <div className="text-sm text-green-600">Successful</div>
                   </div>
-                )}
+                </CardContent>
+              </Card>
+              <Card className="bg-orange-50 border-orange-200">
+                <CardContent className="pt-6">
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-orange-700">{totalDuplicates}</div>
+                    <div className="text-sm text-orange-600">Duplicates</div>
+                  </div>
+                </CardContent>
+              </Card>
+              <Card className="bg-red-50 border-red-200">
+                <CardContent className="pt-6">
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-red-700">{totalFailed}</div>
+                    <div className="text-sm text-red-600">Failed</div>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Filters */}
+            <div className="flex flex-col sm:flex-row gap-4">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Search by name, phone, or ticket code..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="pl-9"
+                />
               </div>
               
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                <div className="space-y-1">
-                  <p className="text-muted-foreground">Total Tickets</p>
-                  <p className="font-semibold">{parsedTickets.length}</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-muted-foreground">Total Amount</p>
-                  <p className="font-semibold">
-                    TZS {parsedTickets.reduce((sum, t) => sum + t.totalAmount, 0).toLocaleString()}
-                  </p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-muted-foreground">Paid Tickets</p>
-                  <p className="font-semibold">
-                    {parsedTickets.filter(t => t.isPaid).length}
-                  </p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-muted-foreground">Pending Tickets</p>
-                  <p className="font-semibold">
-                    {parsedTickets.filter(t => !t.isPaid).length}
-                  </p>
-                </div>
+              <div className="flex gap-2">
+                <Select value={statusFilter} onValueChange={setStatusFilter}>
+                  <SelectTrigger className="w-[130px]">
+                    <Filter className="h-4 w-4 mr-2" />
+                    <SelectValue placeholder="Status" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Status</SelectItem>
+                    <SelectItem value="PAID">Paid</SelectItem>
+                    <SelectItem value="PENDING">Pending</SelectItem>
+                    <SelectItem value="FAILED">Failed</SelectItem>
+                    <SelectItem value="IMPORT_FAILED">Import Failed</SelectItem>
+                  </SelectContent>
+                </Select>
+
+                <Select value={typeFilter} onValueChange={setTypeFilter}>
+                  <SelectTrigger className="w-[130px]">
+                    <SelectValue placeholder="Type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Types</SelectItem>
+                    <SelectItem value="ADULT">Adult</SelectItem>
+                    <SelectItem value="STUDENT">Student</SelectItem>
+                    <SelectItem value="CHILD">Child</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             </div>
-          )}
+
+            {/* Table */}
+            <div className="border rounded-lg overflow-hidden">
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Ticket Code</TableHead>
+                      <TableHead>Name</TableHead>
+                      <TableHead>Phone</TableHead>
+                      <TableHead>Type</TableHead>
+                      <TableHead>Amount</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Imported</TableHead>
+                      <TableHead>Details</TableHead>
+                      <TableHead>Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {isLoading ? (
+                      <TableRow>
+                        <TableCell colSpan={9} className="text-center py-8">
+                          <Loader2 className="h-6 w-6 animate-spin mx-auto" />
+                        </TableCell>
+                      </TableRow>
+                    ) : filteredHistory.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
+                          No import history found
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      filteredHistory.map((ticket) => (
+                        <TableRow key={ticket.id}>
+                          <TableCell className="font-mono font-medium">
+                            {ticket.ticketCode || 'N/A'}
+                          </TableCell>
+                          <TableCell>{ticket.purchaserName || 'N/A'}</TableCell>
+                          <TableCell>{ticket.purchaserPhone || 'N/A'}</TableCell>
+                          <TableCell>{getTypeBadge(ticket.ticketType)}</TableCell>
+                          <TableCell>
+                            TZS {ticket.totalAmount ? parseFloat(ticket.totalAmount).toLocaleString() : '0'}
+                          </TableCell>
+                          <TableCell>{getStatusBadge(ticket.paymentStatus)}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground">
+                            {formatDate(ticket.createdAt)}
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex flex-col gap-1">
+                              {ticket.isDuplicate && (
+                                <Badge variant="outline" className="bg-orange-50 text-orange-700 border-orange-200 w-fit">
+                                  Duplicate
+                                </Badge>
+                              )}
+                              {ticket.importError && (
+                                <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200 w-fit">
+                                  Import Failed
+                                </Badge>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            {(ticket.importError || ticket.validationErrors) && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => viewErrorDetails(ticket)}
+                                className="h-8 w-8 p-0"
+                                title="View error details"
+                              >
+                                <AlertCircle className="h-4 w-4 text-red-600" />
+                              </Button>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+
+            {/* Summary */}
+            {!isLoading && history.length > 0 && (
+              <div className="flex flex-wrap gap-4 text-sm text-muted-foreground items-center">
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-green-500"></div>
+                  <span>Success: {totalSuccess}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-yellow-500"></div>
+                  <span>Pending: {history.filter(t => t.paymentStatus === 'PENDING').length}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-red-500"></div>
+                  <span>Failed: {totalFailed}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-orange-500"></div>
+                  <span>Duplicates: {totalDuplicates}</span>
+                </div>
+                <div className="ml-auto">
+                  <span>Total: {history.length} tickets</span>
+                </div>
+              </div>
+            )}
+          </div>
         </CardContent>
       </Card>
+
+      {/* Error Details Modal */}
+      {selectedError && (
+        <ImportErrorDetailsModal
+          isOpen={showErrorDetails}
+          onClose={() => {
+            setShowErrorDetails(false);
+            setSelectedError(null);
+          }}
+          errorDetails={selectedError}
+        />
+      )}
     </div>
   );
 }

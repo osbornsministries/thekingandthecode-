@@ -21,6 +21,7 @@ export const tickets = mysqlTable('tickets', {
   totalAmount: decimal('total_amount', { precision: 10, scale: 2 }).notNull(),
   paymentStatus: varchar('payment_status', { length: 20 }).default('UNPAID'), 
   paymentMethodId: varchar('payment_method_id', { length: 50 }),
+  isImported: boolean('is_imported').default(false),
   
   status: varchar('status', { length: 20 }).default('PENDING'),
 

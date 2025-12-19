@@ -1,38 +1,69 @@
-// components/import/CSVImport.tsx
+// components/admin/tickets/import-tickets/CSVImport.tsx
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { ImportTicketData } from '@/lib/actions/ticket/ticket-importer';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Loader2, Upload, FileText, AlertCircle, Download, X, Check } from 'lucide-react';
+import { Loader2, Upload, FileText, AlertCircle, Download, X, Check, Edit, RefreshCw, Plus } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import Papa from 'papaparse';
+import ImportResultsModal from './ImportResultsModal';
+import EditTicketModal from './EditTicketModal';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 interface CSVImportProps {
-  onSubmit: (data: ImportTicketData[]) => Promise<void>;
+  onSubmit: (data: ImportTicketData[]) => Promise<any>;
   isLoading: boolean;
 }
 
-export function CSVImport({ onSubmit, isLoading }: CSVImportProps) {
-  const [parsedTickets, setParsedTickets] = useState<ImportTicketData[]>([]);
-  const [parseError, setParseError] = useState<string | null>(null);
-  const [fileName, setFileName] = useState<string>('');
-  const [filePreview, setFilePreview] = useState<string>('');
-  const [parseStats, setParseStats] = useState({
-    totalRows: 0,
-    validRows: 0,
-    invalidRows: 0,
-    skippedRows: 0
-  });
+interface ParseResult {
+  tickets: ImportTicketData[];
+  errors: Array<{
+    row: number;
+    error: string;
+    validationErrors: Record<string, string>;
+    originalData: any;
+  }>;
+  stats: {
+    totalRows: number;
+    validRows: number;
+    invalidRows: number;
+    skippedRows: number;
+  };
+  rawData?: any[];
+}
 
-  // Simplified template with only 2 examples matching your format
+export function CSVImport({ onSubmit, isLoading }: CSVImportProps) {
+  const [parseResult, setParseResult] = useState<ParseResult | null>(null);
+  const [fileName, setFileName] = useState<string>('');
+  const [fileContent, setFileContent] = useState<string>('');
+  const [showResultsModal, setShowResultsModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [ticketToEdit, setTicketToEdit] = useState<{
+    index: number;
+    ticket: ImportTicketData;
+    originalData: any;
+    rowNumber: number;
+    isErrorCorrection?: boolean;
+  } | null>(null);
+  const [importResults, setImportResults] = useState<any>(null);
+  const [activeTab, setActiveTab] = useState<'preview' | 'errors' | 'corrected'>('preview');
+  const [correctedTickets, setCorrectedTickets] = useState<Array<{
+    originalError: ParseResult['errors'][0];
+    correctedTicket: ImportTicketData;
+  }>>([]);
+
+  const rawParsedData = useRef<any[]>([]);
+
   const downloadTemplate = () => {
     const template = `S/N,FULL NAME,PHONE,PAYMENT METHOD,DAY,SESSION,TICKET TYPE,CAPACITY NUMBER,PRICE PER TICKET,TOTAL,STATUS
 1,SUZAN AARON,755026297,MPESA,1,Night,Adult,1,50000,50000,TAKEN
-2,SARAH NDILE,628331663,PESA PAL,1,Night,Student,1,30000,,TAKEN`;
+2,SARAH NDILE,628331663,PESA PAL,1,Night,Student,1,30000,,TAKEN
+3,JOHN DOE,712345678,CASH,1,Night,Child,1,20000,20000,
+4,JANE SMITH,754321987,MPESA,2,Afternoon,Adult,2,50000,100000,TAKEN`;
 
     const blob = new Blob([template], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
@@ -49,209 +80,212 @@ export function CSVImport({ onSubmit, isLoading }: CSVImportProps) {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    // Check file type
     if (!file.name.endsWith('.csv')) {
-      setParseError('Please upload a CSV file');
+      alert('Please upload a CSV file');
       return;
     }
 
-    // Check file size (max 5MB)
     if (file.size > 5 * 1024 * 1024) {
-      setParseError('File size should be less than 5MB');
+      alert('File size should be less than 5MB');
       return;
     }
 
     setFileName(file.name);
-    setParseError(null);
-    setParsedTickets([]);
-    setParseStats({
-      totalRows: 0,
-      validRows: 0,
-      invalidRows: 0,
-      skippedRows: 0
-    });
+    setParseResult(null);
+    setImportResults(null);
+    setCorrectedTickets([]);
 
-    // Read file for preview
     const reader = new FileReader();
     reader.onload = (e) => {
       const content = e.target?.result as string;
-      setFilePreview(content.substring(0, 1000)); // First 1000 chars
+      setFileContent(content);
+      parseCSV(content);
     };
     reader.readAsText(file);
+  }, []);
 
-    // Parse CSV
-    Papa.parse(file, {
+  const parseCSV = (content: string) => {
+    Papa.parse(content, {
       header: true,
       skipEmptyLines: true,
       complete: (results) => {
-        try {
-          const tickets: ImportTicketData[] = [];
-          const errors: string[] = [];
-          let totalRows = 0;
-          let validRows = 0;
-          let invalidRows = 0;
-          let skippedRows = 0;
+        const parseResult: ParseResult = {
+          tickets: [],
+          errors: [],
+          stats: {
+            totalRows: 0,
+            validRows: 0,
+            invalidRows: 0,
+            skippedRows: 0,
+          },
+          rawData: results.data
+        };
 
-          // Expected headers in your format
-          const expectedHeaders = [
-            'S/N', 'FULL NAME', 'PHONE', 'PAYMENT METHOD', 'DAY', 
-            'SESSION', 'TICKET TYPE', 'CAPACITY NUMBER', 'PRICE PER TICKET', 
-            'TOTAL', 'STATUS'
-          ];
+        rawParsedData.current = results.data as any[];
 
-          const headers = results.meta.fields || [];
+        results.data.forEach((row: any, index: number) => {
+          parseResult.stats.totalRows++;
           
-          // Check if headers match expected format
-          const hasRequiredHeaders = expectedHeaders.every(header => 
-            headers.some(h => h.trim().toUpperCase() === header.trim().toUpperCase())
-          );
+          const rowNumber = index + 2;
+          const errors: string[] = [];
+          const validationErrors: Record<string, string> = {};
 
-          if (!hasRequiredHeaders) {
-            errors.push(`CSV format doesn't match expected format. Please use the template.`);
-            errors.push(`Expected headers: ${expectedHeaders.join(', ')}`);
-            errors.push(`Found headers: ${headers.join(', ')}`);
+          const serialNumber = row['S/N'] || row['S/N'] || '';
+          if (!serialNumber || serialNumber.toString().trim() === '') {
+            parseResult.stats.skippedRows++;
+            return;
           }
 
-          results.data.forEach((row: any, index: number) => {
-            totalRows++;
-            
-            // Skip empty rows or rows with empty first column
-            const serialNumber = row['S/N'] || row['S/N'] || row.SN || '';
-            if (!serialNumber || serialNumber.toString().trim() === '') {
-              skippedRows++;
-              return; // Skip empty rows
-            }
-
-            try {
-              // Clean and normalize column names (case insensitive)
-              const getColumnValue = (keys: string[]) => {
-                for (const key of keys) {
-                  if (row[key] !== undefined && row[key] !== null && row[key] !== '') {
-                    return row[key];
-                  }
-                  // Try case-insensitive match
-                  const lowerKey = key.toLowerCase();
-                  for (const actualKey of Object.keys(row)) {
-                    if (actualKey.toLowerCase() === lowerKey) {
-                      return row[actualKey];
-                    }
+          try {
+            const getValue = (keys: string[]) => {
+              for (const key of keys) {
+                const value = row[key];
+                if (value !== undefined && value !== null && value !== '') {
+                  return value;
+                }
+                const lowerKey = key.toLowerCase();
+                for (const actualKey of Object.keys(row)) {
+                  if (actualKey.toLowerCase() === lowerKey) {
+                    return row[actualKey];
                   }
                 }
-                return '';
-              };
-
-              const fullName = getColumnValue(['FULL NAME', 'FULL_NAME', 'NAME', 'FULL NAME ', 'FULL NAME  ']);
-              const phone = getColumnValue(['PHONE', 'PHONE NUMBER', 'PHONENUMBER', 'PHONE ']);
-              const paymentMethod = getColumnValue(['PAYMENT METHOD', 'PAYMENT_METHOD', 'PAYMENT', 'PAYMENT METHOD ']);
-              const dayStr = getColumnValue(['DAY', 'DAY ', 'DAY NUMBER', 'DAY_NO']);
-              const session = getColumnValue(['SESSION', 'SESSION ', 'TIME', 'TIME SESSION']);
-              const ticketTypeRaw = getColumnValue(['TICKET TYPE', 'TICKET_TYPE', 'TYPE', 'TICKET TYPE ', 'TICKET']);
-              const quantityStr = getColumnValue(['CAPACITY NUMBER', 'CAPACITY_NUMBER', 'QUANTITY', 'QTY', 'NUMBER', 'CAPACITY NUMBER ']);
-              const pricePerTicketStr = getColumnValue(['PRICE PER TICKET', 'PRICE_PER_TICKET', 'PRICE', 'PRICE PER TICKET ', 'UNIT PRICE']);
-              const totalStr = getColumnValue(['TOTAL', 'TOTAL ', 'TOTAL AMOUNT', 'AMOUNT']);
-              const status = getColumnValue(['STATUS', 'STATUS ', 'PAYMENT STATUS']);
-
-              // Clean and validate data
-              if (!fullName || fullName.toString().trim() === '') {
-                invalidRows++;
-                errors.push(`Row ${index + 2}: Full name is required`);
-                return;
               }
-              
-              if (!phone || phone.toString().trim() === '') {
-                invalidRows++;
-                errors.push(`Row ${index + 2}: Phone number is required`);
-                return;
-              }
+              return '';
+            };
 
-              // Clean phone number - remove spaces, dashes, and ensure it starts with 255
+            const fullName = getValue(['FULL NAME', 'FULL_NAME', 'NAME']);
+            const phone = getValue(['PHONE', 'PHONE NUMBER', 'PHONENUMBER']);
+            const paymentMethod = getValue(['PAYMENT METHOD', 'PAYMENT_METHOD', 'PAYMENT']);
+            const dayStr = getValue(['DAY', 'DAY NUMBER', 'DAY_NO']);
+            const session = getValue(['SESSION', 'TIME', 'TIME SESSION']);
+            const ticketTypeRaw = getValue(['TICKET TYPE', 'TICKET_TYPE', 'TYPE', 'TICKET']);
+            const quantityStr = getValue(['CAPACITY NUMBER', 'CAPACITY_NUMBER', 'QUANTITY', 'QTY']);
+            const pricePerTicketStr = getValue(['PRICE PER TICKET', 'PRICE_PER_TICKET', 'PRICE', 'UNIT PRICE']);
+            const totalStr = getValue(['TOTAL', 'TOTAL AMOUNT', 'AMOUNT']);
+            const status = getValue(['STATUS', 'PAYMENT STATUS']);
+
+            if (!fullName) {
+              errors.push('Full name is required');
+              validationErrors['FULL NAME'] = 'This field is required';
+            }
+
+            if (!phone) {
+              errors.push('Phone number is required');
+              validationErrors['PHONE'] = 'This field is required';
+            } else {
               let cleanedPhone = phone.toString().replace(/\s+/g, '').replace(/-/g, '').replace(/\+/g, '');
               
-              // If phone starts with 0, replace with 255
               if (cleanedPhone.startsWith('0')) {
                 cleanedPhone = '255' + cleanedPhone.substring(1);
               }
               
-              // If phone is 9 digits, prepend 255
               if (cleanedPhone.length === 9 && !cleanedPhone.startsWith('255')) {
                 cleanedPhone = '255' + cleanedPhone;
               }
               
-              // Validate phone format
               const phoneRegex = /^255\d{9}$/;
               if (!phoneRegex.test(cleanedPhone)) {
-                invalidRows++;
-                errors.push(`Row ${index + 2}: Invalid phone format: ${phone}. Use format: 255712345678 or 0712345678`);
-                return;
+                errors.push(`Invalid phone format: ${phone}`);
+                validationErrors['PHONE'] = 'Use format: 255712345678 or 0712345678';
+              }
+            }
+
+            const ticketTypeLower = (ticketTypeRaw || 'Adult').toString().toLowerCase().trim();
+            const validTicketTypes = ['adult', 'student', 'kid', 'child'];
+            if (!validTicketTypes.includes(ticketTypeLower)) {
+              errors.push(`Invalid ticket type: ${ticketTypeRaw}`);
+              validationErrors['TICKET TYPE'] = 'Must be: Adult, Student, or Child';
+            }
+
+            const dayId = parseInt(dayStr?.toString() || '1') || 1;
+            if (dayId < 1 || dayId > 3) {
+              errors.push(`Invalid day: ${dayStr}. Must be 1, 2, or 3`);
+              validationErrors['DAY'] = 'Must be 1, 2, or 3';
+            }
+
+            const sessionLower = (session || 'Night').toString().toLowerCase().trim();
+            const validSessions = ['night', 'afternoon', 'evening', 'morning'];
+            if (!validSessions.includes(sessionLower)) {
+              errors.push(`Invalid session: ${session}`);
+              validationErrors['SESSION'] = 'Must be: Night, Afternoon, Evening, or Morning';
+            }
+
+            const quantity = parseInt(quantityStr?.toString() || '1') || 1;
+            if (quantity < 1) {
+              errors.push(`Invalid quantity: ${quantityStr}`);
+              validationErrors['CAPACITY NUMBER'] = 'Must be 1 or greater';
+            }
+
+            const pricePerTicket = parsePrice(pricePerTicketStr?.toString() || '0');
+            if (pricePerTicket < 0) {
+              errors.push(`Invalid price: ${pricePerTicketStr}`);
+              validationErrors['PRICE PER TICKET'] = 'Must be a valid number';
+            }
+
+            const totalAmount = parsePrice(totalStr?.toString() || '0') || (pricePerTicket * quantity);
+            if (totalAmount < 0) {
+              errors.push(`Invalid total amount: ${totalStr}`);
+              validationErrors['TOTAL'] = 'Must be a valid number';
+            }
+
+            if (errors.length > 0) {
+              parseResult.stats.invalidRows++;
+              parseResult.errors.push({
+                row: rowNumber,
+                error: errors.join('; '),
+                validationErrors,
+                originalData: row,
+              });
+            } else {
+              parseResult.stats.validRows++;
+              
+              let cleanedPhone = phone.toString().replace(/\s+/g, '').replace(/-/g, '').replace(/\+/g, '');
+              if (cleanedPhone.startsWith('0')) {
+                cleanedPhone = '255' + cleanedPhone.substring(1);
+              }
+              if (cleanedPhone.length === 9 && !cleanedPhone.startsWith('255')) {
+                cleanedPhone = '255' + cleanedPhone;
               }
 
-              // Map session names to session IDs
               const sessionMap: Record<string, number> = {
                 'night': 1,
                 'afternoon': 2,
                 'evening': 3,
                 'morning': 4,
-                'night ': 1,
-                'afternoon ': 2,
-                'evening ': 3,
-                'morning ': 4
               };
-
-              const sessionLower = (session || 'Night').toString().toLowerCase().trim();
+              
               const sessionId = sessionMap[sessionLower] || 1;
 
-              // Map ticket types to standard format
               const ticketTypeMap: Record<string, 'ADULT' | 'STUDENT' | 'CHILD'> = {
                 'adult': 'ADULT',
                 'student': 'STUDENT',
                 'kid': 'CHILD',
                 'child': 'CHILD',
-                'children': 'CHILD',
-                'adult ': 'ADULT',
-                'student ': 'STUDENT',
-                'kid ': 'CHILD'
               };
 
-              const ticketTypeLower = (ticketTypeRaw || 'Adult').toString().toLowerCase().trim();
               const ticketType = ticketTypeMap[ticketTypeLower] || 'ADULT';
 
-              // Parse quantities and amounts
-              const quantity = parseInt(quantityStr?.toString() || '1') || 1;
-              const pricePerTicket = parsePrice(pricePerTicketStr?.toString() || '0');
-              const totalAmount = parsePrice(totalStr?.toString() || '0') || (pricePerTicket * quantity);
+              const isPaid = (status || 'TAKEN').toString().toUpperCase() === 'TAKEN';
+              const paymentStatus = isPaid ? 'PAID' : 'PENDING';
 
-              // Map payment methods to standard format
               const paymentMethodMap: Record<string, string> = {
                 'mpesa': 'MPESA',
                 'pesa pal': 'PESAPAL',
                 'pesapal': 'PESAPAL',
                 'cash': 'CASH',
                 'bank': 'BANK',
-                'airtel': 'AIRTEL',
-                'tigo': 'TIGO',
-                'mpesa ': 'MPESA',
-                'pesa pal ': 'PESAPAL',
-                'cash ': 'CASH'
               };
 
               const paymentMethodLower = (paymentMethod || 'CASH').toString().toLowerCase().trim();
               const paymentMethodId = paymentMethodMap[paymentMethodLower] || 'CASH';
 
-              // Determine if paid based on STATUS column
-              const isPaid = (status || 'TAKEN').toString().toUpperCase() === 'TAKEN';
-              const paymentStatus = isPaid ? 'PAID' : 'PENDING';
-
-              // Map DAY to dayId
-              const dayId = parseInt(dayStr?.toString() || '1') || 1;
-
-              // Create the ticket object
               const ticket: ImportTicketData = {
                 fullName: fullName.toString().trim(),
                 phone: cleanedPhone,
                 ticketType,
                 dayId,
                 sessionId,
-                priceId: 1, // Default price ID
+                priceId: 1,
                 totalAmount,
                 isPaid,
                 paymentStatus,
@@ -261,84 +295,252 @@ export function CSVImport({ onSubmit, isLoading }: CSVImportProps) {
                 studentId: ticketType === 'STUDENT' ? `STU-${Math.floor(10000 + Math.random() * 90000)}` : undefined,
                 institution: ticketType === 'STUDENT' ? 'UNIVERSITY' : undefined,
                 institutionName: ticketType === 'STUDENT' ? 'University' : undefined,
-                notes: `Imported from CSV - Row ${index + 2}`,
-                quantity
+                notes: `Imported from CSV - Row ${rowNumber}`,
+                quantity,
               };
 
-              tickets.push(ticket);
-              validRows++;
-              
-            } catch (rowError: any) {
-              invalidRows++;
-              errors.push(`Row ${index + 2}: ${rowError.message || 'Invalid data format'}`);
+              parseResult.tickets.push(ticket);
             }
-          });
-
-          setParseStats({
-            totalRows,
-            validRows,
-            invalidRows,
-            skippedRows
-          });
-
-          if (errors.length > 0) {
-            setParseError(errors.slice(0, 10).join('\n'));
-            if (errors.length > 10) {
-              setParseError(prev => prev + `\n... and ${errors.length - 10} more errors`);
-            }
-            setParsedTickets([]);
-          } else {
-            setParseError(null);
-            setParsedTickets(tickets);
+          } catch (error: any) {
+            parseResult.stats.invalidRows++;
+            parseResult.errors.push({
+              row: rowNumber,
+              error: error.message || 'Invalid data format',
+              validationErrors: {},
+              originalData: row,
+            });
           }
-        } catch (error) {
-          setParseError(`Parse error: ${error instanceof Error ? error.message : 'Unknown error'}`);
-          setParsedTickets([]);
-        }
+        });
+
+        setParseResult(parseResult);
+        setActiveTab(parseResult.errors.length > 0 ? 'errors' : 'preview');
       },
       error: (error: any) => {
-        setParseError(`CSV parse error: ${error.message}`);
-        setParsedTickets([]);
+        alert(`CSV parse error: ${error.message}`);
       }
     });
-  }, []);
+  };
 
-  // Helper function to parse price strings like "250,000/=" or "50,000"
   const parsePrice = (priceStr: string): number => {
     if (!priceStr || priceStr.trim() === '') return 0;
-    
-    // Remove currency symbols, commas, slashes, equals signs, and spaces
     const cleaned = priceStr
       .toString()
-      .replace(/[^\d.-]/g, '') // Keep only numbers, dots, and minus
-      .replace(/,/g, '') // Remove commas
+      .replace(/[^\d.-]/g, '')
+      .replace(/,/g, '')
       .trim();
-    
     return parseFloat(cleaned) || 0;
   };
 
   const handleSubmit = async () => {
-    if (parsedTickets.length === 0) {
-      setParseError('No valid tickets to import');
+    if (!parseResult || parseResult.tickets.length === 0) {
+      alert('No valid tickets to import');
       return;
     }
-    await onSubmit(parsedTickets);
-  };
+
+    // try {
+      const result = await onSubmit(parseResult.tickets);
+      setImportResults(result);
+      
+      if (result.results) {
+        setShowResultsModal(true);
+      }
+  //   } catch (error) {
+  //     console.error('Import failed:', error);
+  //     alert('Import failed. Please check the console for details.');
+  //   }
+   };
 
   const clearFile = () => {
     setFileName('');
-    setFilePreview('');
-    setParsedTickets([]);
-    setParseError(null);
-    setParseStats({
-      totalRows: 0,
-      validRows: 0,
-      invalidRows: 0,
-      skippedRows: 0
-    });
-    // Reset file input
+    setFileContent('');
+    setParseResult(null);
+    setImportResults(null);
+    setCorrectedTickets([]);
+    rawParsedData.current = [];
     const fileInput = document.getElementById('csvFile') as HTMLInputElement;
     if (fileInput) fileInput.value = '';
+  };
+
+  const handleEditTicket = (index: number) => {
+    if (!parseResult || !parseResult.rawData) return;
+    
+    const ticket = parseResult.tickets[index];
+    let originalIndex = 0;
+    let validCount = 0;
+    
+    for (let i = 0; i < parseResult.rawData.length; i++) {
+      const row = parseResult.rawData[i];
+      const serialNumber = row['S/N'] || '';
+      
+      if (serialNumber && serialNumber.toString().trim() !== '') {
+        if (validCount === index) {
+          originalIndex = i;
+          break;
+        }
+        validCount++;
+      }
+    }
+    
+    const originalData = parseResult.rawData[originalIndex];
+    
+    setTicketToEdit({
+      index,
+      ticket,
+      originalData: originalData || {},
+      rowNumber: originalIndex + 2,
+    });
+    setShowEditModal(true);
+  };
+
+  const handleEditErrorRow = (errorIndex: number) => {
+    if (!parseResult) return;
+    
+    const error = parseResult.errors[errorIndex];
+    const row = error.originalData;
+    
+    let ticket: ImportTicketData = {
+      fullName: row['FULL NAME'] || row['FULL_NAME'] || row['NAME'] || '',
+      phone: row['PHONE'] || row['PHONE NUMBER'] || '',
+      ticketType: 'ADULT',
+      dayId: 1,
+      sessionId: 1,
+      priceId: 1,
+      totalAmount: 0,
+      isPaid: false,
+      paymentStatus: 'PENDING',
+      paymentMethodId: 'CASH',
+      quantity: 1,
+      notes: `Corrected from error row ${error.row}`,
+      externalId: undefined,
+      transactionId: undefined,
+      studentId: undefined,
+      institution: undefined,
+      institutionName: undefined,
+    };
+    
+    try {
+      if (row['TICKET TYPE']) {
+        const type = row['TICKET TYPE'].toString().toLowerCase().trim();
+        if (type.includes('student')) ticket.ticketType = 'STUDENT';
+        else if (type.includes('child') || type.includes('kid')) ticket.ticketType = 'CHILD';
+      }
+      
+      if (row['DAY']) {
+        const day = parseInt(row['DAY'].toString()) || 1;
+        ticket.dayId = Math.max(1, Math.min(3, day));
+      }
+      
+      if (row['SESSION']) {
+        const session = row['SESSION'].toString().toLowerCase().trim();
+        if (session.includes('afternoon')) ticket.sessionId = 2;
+        else if (session.includes('evening')) ticket.sessionId = 3;
+        else if (session.includes('morning')) ticket.sessionId = 4;
+      }
+      
+      if (row['TOTAL']) {
+        ticket.totalAmount = parsePrice(row['TOTAL'].toString());
+      }
+      
+      if (row['STATUS'] && row['STATUS'].toString().toUpperCase() === 'TAKEN') {
+        ticket.isPaid = true;
+        ticket.paymentStatus = 'PAID';
+      }
+      
+      if (row['CAPACITY NUMBER']) {
+        ticket.quantity = parseInt(row['CAPACITY NUMBER'].toString()) || 1;
+      }
+      
+    } catch (e) {
+      console.error('Error parsing error row:', e);
+    }
+    
+    setTicketToEdit({
+      index: errorIndex,
+      ticket,
+      originalData: error.originalData,
+      rowNumber: error.row,
+      isErrorCorrection: true,
+    });
+    setShowEditModal(true);
+  };
+
+  const handleSaveEditedTicket = (editedTicket: ImportTicketData) => {
+    if (!parseResult || !ticketToEdit) return;
+
+    if (ticketToEdit.isErrorCorrection) {
+      // Save as corrected error
+      const originalError = parseResult.errors[ticketToEdit.index];
+      const correctedItem = {
+        originalError,
+        correctedTicket: editedTicket
+      };
+
+      const existingIndex = correctedTickets.findIndex(
+        ct => ct.originalError.row === originalError.row
+      );
+
+      if (existingIndex >= 0) {
+        const updated = [...correctedTickets];
+        updated[existingIndex] = correctedItem;
+        setCorrectedTickets(updated);
+      } else {
+        setCorrectedTickets([...correctedTickets, correctedItem]);
+      }
+    } else {
+      // Update existing valid ticket
+      const updatedTickets = [...parseResult.tickets];
+      updatedTickets[ticketToEdit.index] = editedTicket;
+      setParseResult({
+        ...parseResult,
+        tickets: updatedTickets,
+      });
+    }
+    
+    setShowEditModal(false);
+    setTicketToEdit(null);
+  };
+
+  const addCorrectedToImport = () => {
+    if (!parseResult || correctedTickets.length === 0) return;
+
+    const newTickets = correctedTickets.map(item => item.correctedTicket);
+    const updatedTickets = [...parseResult.tickets, ...newTickets];
+    
+    const remainingErrors = parseResult.errors.filter(error => 
+      !correctedTickets.some(ct => ct.originalError.row === error.row)
+    );
+    
+    setParseResult({
+      ...parseResult,
+      tickets: updatedTickets,
+      errors: remainingErrors,
+      stats: {
+        ...parseResult.stats,
+        validRows: parseResult.stats.validRows + correctedTickets.length,
+        invalidRows: parseResult.stats.invalidRows - correctedTickets.length
+      }
+    });
+    
+    setCorrectedTickets([]);
+    setActiveTab('preview');
+  };
+
+  const handleEditCorrectedTicket = (index: number) => {
+    const correctedItem = correctedTickets[index];
+    
+    setTicketToEdit({
+      index,
+      ticket: correctedItem.correctedTicket,
+      originalData: correctedItem.originalError.originalData,
+      rowNumber: correctedItem.originalError.row,
+      isErrorCorrection: true,
+    });
+    setShowEditModal(true);
+  };
+
+  const handleRemoveCorrectedTicket = (index: number) => {
+    const updatedCorrected = correctedTickets.filter((_, i) => i !== index);
+    setCorrectedTickets(updatedCorrected);
   };
 
   return (
@@ -347,7 +549,7 @@ export function CSVImport({ onSubmit, isLoading }: CSVImportProps) {
         <CardHeader>
           <CardTitle>CSV File Import</CardTitle>
           <CardDescription>
-            Upload a CSV file matching your ticket list format. Download the template to ensure correct formatting.
+            Upload a CSV file matching your ticket list format. Correct errors and retry failed imports.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
@@ -375,41 +577,6 @@ export function CSVImport({ onSubmit, isLoading }: CSVImportProps) {
                   <Download className="h-3 w-3" />
                   Download Template
                 </Button>
-              </div>
-              <div className="border rounded-lg p-4 bg-muted/50">
-                <p className="text-sm font-semibold mb-2">CSV Format Details:</p>
-                <div className="text-sm space-y-1 text-muted-foreground">
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <p className="font-medium">Column</p>
-                      <p>S/N</p>
-                      <p>FULL NAME</p>
-                      <p>PHONE</p>
-                      <p>PAYMENT METHOD</p>
-                      <p>DAY</p>
-                      <p>SESSION</p>
-                      <p>TICKET TYPE</p>
-                      <p>CAPACITY NUMBER</p>
-                      <p>PRICE PER TICKET</p>
-                      <p>TOTAL</p>
-                      <p>STATUS</p>
-                    </div>
-                    <div>
-                      <p className="font-medium">Description</p>
-                      <p>Serial number (can be empty)</p>
-                      <p>Full name of attendee</p>
-                      <p>Phone number (0712345678 or 255712345678)</p>
-                      <p>MPESA, CASH, PESA PAL, BANK</p>
-                      <p>Day number (1, 2, 3)</p>
-                      <p>Night, Afternoon, Evening</p>
-                      <p>Adult, Student, Kid/Child</p>
-                      <p>Quantity (number of tickets)</p>
-                      <p>Price per ticket (50000, 30000)</p>
-                      <p>Total amount (optional)</p>
-                      <p>TAKEN or empty</p>
-                    </div>
-                  </div>
-                </div>
               </div>
             </div>
 
@@ -450,200 +617,355 @@ export function CSVImport({ onSubmit, isLoading }: CSVImportProps) {
               </div>
             </div>
 
-            {filePreview && (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <Label>File Preview</Label>
-                  <span className="text-xs text-muted-foreground">
-                    Showing first {Math.min(1000, filePreview.length)} characters
-                  </span>
-                </div>
-                <div className="border rounded-lg p-4 bg-muted/50">
-                  <pre className="text-xs font-mono whitespace-pre-wrap max-h-40 overflow-y-auto">
-                    {filePreview}
-                    {filePreview.length >= 1000 && '...'}
-                  </pre>
-                </div>
-              </div>
-            )}
-
-            {parseStats.totalRows > 0 && (
-              <div className="border rounded-lg p-4">
+            {parseResult && (
+              <>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div className="text-center">
-                    <p className="text-sm text-muted-foreground">Total Rows</p>
-                    <p className="text-2xl font-bold">{parseStats.totalRows}</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-sm text-muted-foreground">Valid Tickets</p>
-                    <p className="text-2xl font-bold text-green-600">{parseStats.validRows}</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-sm text-muted-foreground">Invalid Rows</p>
-                    <p className="text-2xl font-bold text-red-600">{parseStats.invalidRows}</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-sm text-muted-foreground">Skipped</p>
-                    <p className="text-2xl font-bold text-yellow-600">{parseStats.skippedRows}</p>
-                  </div>
+                  <Card>
+                    <CardContent className="pt-6 text-center">
+                      <div className="text-2xl font-bold">{parseResult.stats.totalRows}</div>
+                      <div className="text-sm text-muted-foreground">Total Rows</div>
+                    </CardContent>
+                  </Card>
+                  <Card className="bg-green-50 border-green-200">
+                    <CardContent className="pt-6 text-center">
+                      <div className="text-2xl font-bold text-green-700">{parseResult.stats.validRows}</div>
+                      <div className="text-sm text-green-600">Valid Tickets</div>
+                    </CardContent>
+                  </Card>
+                  <Card className="bg-red-50 border-red-200">
+                    <CardContent className="pt-6 text-center">
+                      <div className="text-2xl font-bold text-red-700">{parseResult.stats.invalidRows}</div>
+                      <div className="text-sm text-red-600">Errors</div>
+                    </CardContent>
+                  </Card>
+                  <Card className="bg-yellow-50 border-yellow-200">
+                    <CardContent className="pt-6 text-center">
+                      <div className="text-2xl font-bold text-yellow-700">{parseResult.stats.skippedRows}</div>
+                      <div className="text-sm text-yellow-600">Skipped</div>
+                    </CardContent>
+                  </Card>
                 </div>
-              </div>
-            )}
 
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                onClick={handleSubmit}
-                disabled={isLoading || parsedTickets.length === 0}
-                className="flex-1"
-              >
-                {isLoading ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Importing...
-                  </>
-                ) : (
-                  `Import ${parsedTickets.length} Ticket${parsedTickets.length !== 1 ? 's' : ''}`
-                )}
-              </Button>
-            </div>
+                <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as any)}>
+                  <TabsList className="grid grid-cols-3">
+                    <TabsTrigger value="preview" disabled={parseResult.tickets.length === 0}>
+                      Valid Tickets ({parseResult.tickets.length})
+                    </TabsTrigger>
+                    <TabsTrigger value="errors" disabled={parseResult.errors.length === 0}>
+                      Errors ({parseResult.errors.length})
+                    </TabsTrigger>
+                    <TabsTrigger value="corrected" disabled={correctedTickets.length === 0}>
+                      Corrected ({correctedTickets.length})
+                    </TabsTrigger>
+                  </TabsList>
 
-            {parseError && (
-              <Alert variant="destructive">
-                <AlertDescription className="font-mono text-sm whitespace-pre-wrap max-h-60 overflow-y-auto">
-                  {parseError}
-                </AlertDescription>
-              </Alert>
-            )}
+                  <TabsContent value="preview" className="space-y-4">
+                    {parseResult.tickets.length > 0 && (
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                          <h4 className="font-semibold">Valid Tickets Ready for Import</h4>
+                          <Badge className="bg-green-100 text-green-800 hover:bg-green-100">
+                            <Check className="h-3 w-3 mr-1" />
+                            Ready
+                          </Badge>
+                        </div>
+                        
+                        <div className="border rounded-lg overflow-hidden">
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-sm">
+                              <thead className="bg-muted">
+                                <tr>
+                                  <th className="px-4 py-2 text-left">Row</th>
+                                  <th className="px-4 py-2 text-left">Name</th>
+                                  <th className="px-4 py-2 text-left">Phone</th>
+                                  <th className="px-4 py-2 text-left">Type</th>
+                                  <th className="px-4 py-2 text-left">Amount</th>
+                                  <th className="px-4 py-2 text-left">Status</th>
+                                  <th className="px-4 py-2 text-left">Actions</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {parseResult.tickets.slice(0, 10).map((ticket, index) => (
+                                  <tr key={index} className="border-t hover:bg-muted/50">
+                                    <td className="px-4 py-2 font-mono">{index + 1}</td>
+                                    <td className="px-4 py-2 font-medium">{ticket.fullName}</td>
+                                    <td className="px-4 py-2 font-mono text-xs">{ticket.phone}</td>
+                                    <td className="px-4 py-2">
+                                      <Badge variant="outline">
+                                        {ticket.ticketType}
+                                      </Badge>
+                                    </td>
+                                    <td className="px-4 py-2 font-medium">
+                                      TZS {ticket.totalAmount.toLocaleString()}
+                                    </td>
+                                    <td className="px-4 py-2">
+                                      <Badge 
+                                        variant={ticket.isPaid ? "default" : "secondary"}
+                                        className={ticket.isPaid ? "bg-green-100 text-green-800" : "bg-yellow-100 text-yellow-800"}
+                                      >
+                                        {ticket.paymentStatus}
+                                      </Badge>
+                                    </td>
+                                    <td className="px-4 py-2">
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => handleEditTicket(index)}
+                                        className="h-8 w-8 p-0"
+                                        title="Edit ticket"
+                                      >
+                                        <Edit className="h-4 w-4" />
+                                      </Button>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                          
+                          {parseResult.tickets.length > 10 && (
+                            <div className="px-4 py-2 bg-muted text-center text-sm">
+                              ... and {parseResult.tickets.length - 10} more tickets
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </TabsContent>
 
-            {parsedTickets.length > 0 && (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h4 className="font-semibold">
-                    Tickets Ready for Import ({parsedTickets.length})
-                  </h4>
-                  <Badge className="bg-green-100 text-green-800 hover:bg-green-100">
-                    <Check className="h-3 w-3 mr-1" />
-                    Ready
-                  </Badge>
-                </div>
-                
-                <div className="border rounded-lg overflow-hidden">
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead className="bg-muted">
-                        <tr>
-                          <th className="px-4 py-2 text-left">Name</th>
-                          <th className="px-4 py-2 text-left">Phone</th>
-                          <th className="px-4 py-2 text-left">Type</th>
-                          <th className="px-4 py-2 text-left">Day</th>
-                          <th className="px-4 py-2 text-left">Session</th>
-                          <th className="px-4 py-2 text-left">Qty</th>
-                          <th className="px-4 py-2 text-left">Amount</th>
-                          <th className="px-4 py-2 text-left">Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {parsedTickets.slice(0, 5).map((ticket, index) => (
-                          <tr key={index} className="border-t hover:bg-muted/50">
-                            <td className="px-4 py-2 font-medium">{ticket.fullName}</td>
-                            <td className="px-4 py-2 font-mono text-xs">{ticket.phone}</td>
-                            <td className="px-4 py-2">
-                              <Badge 
-                                variant="outline" 
-                                className={`text-xs ${
-                                  ticket.ticketType === 'ADULT' ? 'border-blue-200 text-blue-700' :
-                                  ticket.ticketType === 'STUDENT' ? 'border-purple-200 text-purple-700' :
-                                  'border-green-200 text-green-700'
-                                }`}
-                              >
-                                {ticket.ticketType}
-                              </Badge>
-                            </td>
-                            <td className="px-4 py-2">Day {ticket.dayId}</td>
-                            <td className="px-4 py-2">
-                              {ticket.sessionId === 1 ? 'Night' : 
-                               ticket.sessionId === 2 ? 'Afternoon' : 
-                               ticket.sessionId === 3 ? 'Evening' : 'Morning'}
-                            </td>
-                            <td className="px-4 py-2">{ticket.quantity}</td>
-                            <td className="px-4 py-2 font-medium">
-                              TZS {ticket.totalAmount.toLocaleString()}
-                            </td>
-                            <td className="px-4 py-2">
-                              <Badge 
-                                variant={ticket.isPaid ? "default" : "secondary"}
-                                className={`text-xs ${
-                                  ticket.isPaid ? 'bg-green-100 text-green-800 hover:bg-green-100' :
-                                  'bg-yellow-100 text-yellow-800 hover:bg-yellow-100'
-                                }`}
-                              >
-                                {ticket.paymentStatus}
-                              </Badge>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  
-                  {parsedTickets.length > 5 && (
-                    <div className="px-4 py-2 bg-muted text-center text-sm">
-                      ... and {parsedTickets.length - 5} more tickets
-                    </div>
+                  <TabsContent value="errors" className="space-y-4">
+                    {parseResult.errors.length > 0 && (
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                          <h4 className="font-semibold text-red-600">Rows with Errors</h4>
+                          {correctedTickets.length > 0 && (
+                            <Badge className="bg-blue-100 text-blue-800">
+                              {correctedTickets.length} corrected
+                            </Badge>
+                          )}
+                        </div>
+                        
+                        <div className="border rounded-lg overflow-hidden">
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-sm">
+                              <thead className="bg-red-50">
+                                <tr>
+                                  <th className="px-4 py-2 text-left">Row #</th>
+                                  <th className="px-4 py-2 text-left">Data</th>
+                                  <th className="px-4 py-2 text-left">Error Details</th>
+                                  <th className="px-4 py-2 text-left">Actions</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {parseResult.errors.map((error, index) => {
+                                  const isCorrected = correctedTickets.some(
+                                    ct => ct.originalError.row === error.row
+                                  );
+                                  return (
+                                    <tr key={index} className={`border-t hover:bg-red-50/50 ${isCorrected ? 'bg-green-50' : ''}`}>
+                                      <td className="px-4 py-2 font-mono font-bold">
+                                        Row {error.row}
+                                        {isCorrected && (
+                                          <Badge className="ml-2 bg-green-100 text-green-800 text-xs">
+                                            Corrected
+                                          </Badge>
+                                        )}
+                                      </td>
+                                      <td className="px-4 py-2">
+                                        <div className="text-xs font-mono max-w-xs truncate">
+                                          {JSON.stringify(error.originalData)}
+                                        </div>
+                                      </td>
+                                      <td className="px-4 py-2">
+                                        <div className="space-y-1">
+                                          <p className="text-red-600 text-sm">{error.error}</p>
+                                          {Object.keys(error.validationErrors).length > 0 && (
+                                            <div className="flex flex-wrap gap-1">
+                                              {Object.entries(error.validationErrors).map(([field, fieldError]) => (
+                                                <Badge key={field} variant="outline" className="bg-red-50 text-red-700 border-red-200 text-xs">
+                                                  {field}: {fieldError}
+                                                </Badge>
+                                              ))}
+                                            </div>
+                                          )}
+                                        </div>
+                                      </td>
+                                      <td className="px-4 py-2">
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          onClick={() => handleEditErrorRow(index)}
+                                          className="h-8 w-8 p-0"
+                                          title="Correct this error"
+                                          disabled={isCorrected}
+                                        >
+                                          <Edit className={`h-4 w-4 ${isCorrected ? 'text-green-600' : ''}`} />
+                                        </Button>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </TabsContent>
+
+                  <TabsContent value="corrected" className="space-y-4">
+                    {correctedTickets.length > 0 && (
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <h4 className="font-semibold">Corrected Tickets</h4>
+                            <p className="text-sm text-muted-foreground">
+                              {correctedTickets.length} error(s) have been corrected
+                            </p>
+                          </div>
+                          <div className="flex gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={addCorrectedToImport}
+                              className="gap-2"
+                            >
+                              <Plus className="h-4 w-4" />
+                              Add to Import ({correctedTickets.length})
+                            </Button>
+                          </div>
+                        </div>
+                        
+                        <div className="border rounded-lg overflow-hidden">
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-sm">
+                              <thead className="bg-blue-50">
+                                <tr>
+                                  <th className="px-4 py-2 text-left">Original Row</th>
+                                  <th className="px-4 py-2 text-left">Name</th>
+                                  <th className="px-4 py-2 text-left">Phone</th>
+                                  <th className="px-4 py-2 text-left">Type</th>
+                                  <th className="px-4 py-2 text-left">Amount</th>
+                                  <th className="px-4 py-2 text-left">Status</th>
+                                  <th className="px-4 py-2 text-left">Actions</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {correctedTickets.map((item, index) => (
+                                  <tr key={index} className="border-t hover:bg-blue-50/50">
+                                    <td className="px-4 py-2 font-mono font-bold">
+                                      Row {item.originalError.row}
+                                    </td>
+                                    <td className="px-4 py-2 font-medium">{item.correctedTicket.fullName}</td>
+                                    <td className="px-4 py-2 font-mono text-xs">{item.correctedTicket.phone}</td>
+                                    <td className="px-4 py-2">
+                                      <Badge variant="outline">
+                                        {item.correctedTicket.ticketType}
+                                      </Badge>
+                                    </td>
+                                    <td className="px-4 py-2 font-medium">
+                                      TZS {item.correctedTicket.totalAmount.toLocaleString()}
+                                    </td>
+                                    <td className="px-4 py-2">
+                                      <Badge 
+                                        variant={item.correctedTicket.isPaid ? "default" : "secondary"}
+                                        className={item.correctedTicket.isPaid ? "bg-green-100 text-green-800" : "bg-yellow-100 text-yellow-800"}
+                                      >
+                                        {item.correctedTicket.paymentStatus}
+                                      </Badge>
+                                    </td>
+                                    <td className="px-4 py-2">
+                                      <div className="flex gap-1">
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          onClick={() => handleEditCorrectedTicket(index)}
+                                          className="h-8 w-8 p-0"
+                                          title="Edit corrected ticket"
+                                        >
+                                          <Edit className="h-4 w-4" />
+                                        </Button>
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          onClick={() => handleRemoveCorrectedTicket(index)}
+                                          className="h-8 w-8 p-0 text-red-600 hover:text-red-700"
+                                          title="Remove from corrected"
+                                        >
+                                          <X className="h-4 w-4" />
+                                        </Button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </TabsContent>
+                </Tabs>
+
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    onClick={handleSubmit}
+                    disabled={isLoading || parseResult.tickets.length === 0}
+                    className="flex-1"
+                  >
+                    {isLoading ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Importing...
+                      </>
+                    ) : (
+                      `Import ${parseResult.tickets.length} Valid Ticket${parseResult.tickets.length !== 1 ? 's' : ''}`
+                    )}
+                  </Button>
+                  {correctedTickets.length > 0 && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={addCorrectedToImport}
+                      className="gap-2"
+                    >
+                      <Plus className="h-4 w-4" />
+                      Add Corrected ({correctedTickets.length})
+                    </Button>
                   )}
                 </div>
-                
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                  <div className="space-y-1">
-                    <p className="text-muted-foreground">Total Tickets</p>
-                    <p className="font-semibold text-lg">{parsedTickets.length}</p>
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-muted-foreground">Total Amount</p>
-                    <p className="font-semibold text-lg">
-                      TZS {parsedTickets.reduce((sum, t) => sum + t.totalAmount, 0).toLocaleString()}
-                    </p>
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-muted-foreground">Paid Tickets</p>
-                    <p className="font-semibold text-lg">
-                      {parsedTickets.filter(t => t.isPaid).length}
-                    </p>
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-muted-foreground">Pending Tickets</p>
-                    <p className="font-semibold text-lg">
-                      {parsedTickets.filter(t => !t.isPaid).length}
-                    </p>
-                  </div>
-                </div>
-                
-                <div className="grid grid-cols-3 gap-4 text-sm">
-                  <div className="space-y-1">
-                    <p className="text-muted-foreground">Adult Tickets</p>
-                    <p className="font-semibold">
-                      {parsedTickets.filter(t => t.ticketType === 'ADULT').length}
-                    </p>
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-muted-foreground">Student Tickets</p>
-                    <p className="font-semibold">
-                      {parsedTickets.filter(t => t.ticketType === 'STUDENT').length}
-                    </p>
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-muted-foreground">Child Tickets</p>
-                    <p className="font-semibold">
-                      {parsedTickets.filter(t => t.ticketType === 'CHILD').length}
-                    </p>
-                  </div>
-                </div>
-              </div>
+              </>
             )}
           </div>
         </CardContent>
       </Card>
+
+      {importResults && (
+        <ImportResultsModal
+          isOpen={showResultsModal}
+          onClose={() => setShowResultsModal(false)}
+          results={importResults}
+          onViewHistory={() => {
+            setShowResultsModal(false);
+          }}
+        />
+      )}
+
+      {ticketToEdit && (
+        <EditTicketModal
+          isOpen={showEditModal}
+          onClose={() => {
+            setShowEditModal(false);
+            setTicketToEdit(null);
+          }}
+          ticket={ticketToEdit.ticket}
+          originalData={ticketToEdit.originalData}
+          rowNumber={ticketToEdit.rowNumber}
+          onSave={handleSaveEditedTicket}
+        />
+      )}
     </div>
   );
 }
