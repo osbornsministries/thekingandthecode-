@@ -12,7 +12,7 @@ export default function StepDaySelection({ days, selectedDayId, onSelect }: Prop
   const activeDays = days.filter(day => day.isActive);
   
   // Define sold out days (Day 3 in this case)
-  const SOLD_OUT_DAYS = [3];
+  const SOLD_OUT_DAYS = [1,3];
 
   // Format date nicely
   const formatDate = (dateString: string) => {

@@ -213,7 +213,7 @@ export default function TicketForm({ dbPrices, dbMethods, dbDays, dbSessions }: 
           <StepDaySelection
             days={dbDays.map(day => ({
               ...day,
-              soldOut: day.id === 3 // Mark day with ID 3 as sold out
+              soldOut: day.id === 3 && day.id===1// Mark day with ID 3 as sold out
             }))}
             selectedDayId={formData.dayId}
             onSelect={(id) => {

@@ -19,6 +19,9 @@ const menuItems = [
             { name: 'Assign tickt', href: '/admin/agent' },
             { name: 'Cash Ticket', href: '/admin/pos' },
             { name: 'Verify (Scanner)', href: '/admin/verify' },
+            { name: 'Verified ticket', href: '/admin/verified-tickets' },
+            
+            
         ]
     },
     { name: 'Users', href: '/admin/users', icon: Users },
