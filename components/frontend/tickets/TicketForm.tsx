@@ -209,43 +209,25 @@ export default function TicketForm({ dbPrices, dbMethods, dbDays, dbSessions }: 
 
         <div className="step-content flex-1">
           {/* STEP 1: Select Event Day */}
-        {step === 1 && (
-          <StepDaySelection
-            days={dbDays.map(day => ({
-              ...day,
-              soldOut: day.id === 3 && day.id===1// Mark day with ID 3 as sold out
-            }))}
-            selectedDayId={formData.dayId}
-            onSelect={(id) => {
-              // Prevent selection if day is sold out
-              if (id === 3) {
-                setErrorMessage("This day is sold out!");
-                return;
-              }
-              updateData('dayId', id);
-            }}
+      {step === 1 && (
+        <StepDaySelection
+          days={dbDays}                 // 👈 PASS RAW DATA
+          selectedDayId={formData.dayId}
+          onSelect={(id) => updateData('dayId', id)}
+        />
+        )}
+
+
+          {/* STEP 2: Select Session Time */}
+       {step === 2 && (
+          <StepSessionSelection
+            sessions={filteredSessions}   // 👈 PASS RAW DATA
+            selectedSessionId={formData.sessionId}
+            selectedDayId={formData.dayId || undefined}
+            onSelect={(id) => updateData('sessionId', id)}
           />
         )}
 
-          {/* STEP 2: Select Session Time */}
-         {step === 2 && (
-            <StepSessionSelection
-              sessions={filteredSessions.map(session => ({
-                ...session,
-                soldOut: [7, 8, 9].includes(session.id) // Mark sessions 7, 8, 9 as sold out
-              }))}
-              selectedSessionId={formData.sessionId}
-              selectedDayId={formData.dayId || undefined}
-              onSelect={(id) => {
-                // Prevent selection if session is sold out
-                if ([7, 8, 9].includes(id)) {
-                  setErrorMessage("This session is sold out!");
-                  return;
-                }
-                updateData('sessionId', id);
-              }}
-            />
-          )}
           {/* STEP 3: Select Ticket Type */}
           {step === 3 && (
             <StepSelection

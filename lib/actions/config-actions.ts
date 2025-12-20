@@ -31,7 +31,7 @@ export async function getTicketConfiguration() {
     // 3. Fetch Active Event Days
     const days = await db.select()
       .from(schema.eventDays)
-      .where(eq(schema.eventDays.isActive, true));
+      // .where(eq(schema.eventDays.isActive, true));
     
     console.log(`✅ Found ${days.length} active event days`);
     
